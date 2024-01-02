@@ -1,6 +1,6 @@
 # CodeLLaMa Fine-tuned
 This repository houses code dedicated to fine-tuning the [Code Llama 2](https://huggingface.co/codellama/CodeLlama-7b-hf) model for the specific task of predicting method names. In essence, when presented with code snippets from programming languages like Python and Java, the model is trained to produce an appropriate method name as its output.   
-This specialized task is referred to as [code infilling](https://huggingface.co/blog/codellama), wherein the model is conditioned to generate code that aligns  with an existing code's beginning and end sections. The model is fine-tuned with data scraped from the official [Intellij community repository](repositoryhttps://github.com/JetBrains/intellij-community).  
+This specialized task is referred to as [code infilling](https://huggingface.co/blog/codellama#code-infilling), wherein the model is conditioned to generate code that aligns  with an existing code's beginning and end sections. The model is fine-tuned with data scraped from the official [Intellij community repository](repositoryhttps://github.com/JetBrains/intellij-community).  
 The main objective of this repository is to showcase the adaptation of downstream models and the outcomes to validate the feasibility of the task. Potential future improvements, such as saving models, expanding to support additional languages, and refining the code and methodology, could be considered.  
 
 This module is developed using ```python 3.9``` and ```CUDA Version: 11.7``` and requires GPU access.
