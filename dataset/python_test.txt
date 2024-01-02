@@ -1,0 +1,3263 @@
+def _bookmarks(self):
+            '''Parse .hg/bookmarks file and return a dictionary
+
+            Bookmarks are stored as {HASH}\\s{NAME}\\n (localtags format) values
+            in the .hg/bookmarks file. They are read returned as a dictionary
+            with name => hash values.
+            '''
+            try:
+                bookmarks = {}
+                for line in self.opener('bookmarks'):
+                    sha, refspec = line.strip().split(' ', 1)
+                    bookmarks[refspec] = super(bookmark_repo, self).lookup(sha)
+            except:
+                pass
+            return bookmarks
+###END###
+def _bookmarkcurrent(self):
+            '''Get the current bookmark
+
+            If we use gittishsh branches we have a current bookmark that
+            we are on. This function returns the name of the bookmark. It
+            is stored in .hg/bookmarks.current
+            '''
+            mark = None
+            if os.path.exists(self.join('bookmarks.current')):
+                file = self.opener('bookmarks.current')
+                # No readline() in posixfile_nt, reading everything is cheap
+                mark = (file.readlines() or [''])[0]
+                if mark == '':
+                    mark = None
+                file.close()
+            return mark
+###END###
+def rollback(self):
+            if os.path.exists(self.join('undo.bookmarks')):
+                util.rename(self.join('undo.bookmarks'), self.join('bookmarks'))
+            return super(bookmark_repo, self).rollback()
+###END###
+def lookup(self, key):
+            if key in self._bookmarks:
+                key = self._bookmarks[key]
+            return super(bookmark_repo, self).lookup(key)
+###END###
+def _bookmarksupdate(self, parents, node):
+            marks = self._bookmarks
+            update = False
+            if ui.configbool('bookmarks', 'track.current'):
+                mark = self._bookmarkcurrent
+                if mark and marks[mark] in parents:
+                    marks[mark] = node
+                    update = True
+            else:
+                for mark, n in marks.items():
+                    if n in parents:
+                        marks[mark] = node
+                        update = True
+            if update:
+                write(self)
+###END###
+def commitctx(self, ctx, error=False):
+            """Add a revision to the repository and
+            move the bookmark"""
+            wlock = self.wlock() # do both commit and bookmark with lock held
+            try:
+                node  = super(bookmark_repo, self).commitctx(ctx, error)
+                if node is None:
+                    return None
+                parents = self.changelog.parents(node)
+                if parents[1] == nullid:
+                    parents = (parents[0],)
+
+                self._bookmarksupdate(parents, node)
+                return node
+            finally:
+                wlock.release()
+###END###
+def addchangegroup(self, source, srctype, url, emptyok=False):
+            parents = self.dirstate.parents()
+
+            result = super(bookmark_repo, self).addchangegroup(
+                source, srctype, url, emptyok)
+            if result > 1:
+                # We have more heads than before
+                return result
+            node = self.changelog.tip()
+
+            self._bookmarksupdate(parents, node)
+            return result
+###END###
+def _findtags(self):
+            """Merge bookmarks with normal tags"""
+            (tags, tagtypes) = super(bookmark_repo, self)._findtags()
+            tags.update(self._bookmarks)
+            return (tags, tagtypes)
+###END###
+def __init__(self, ui, repo, inc, exc):
+        self.ui = ui
+        self._repo = weakref.ref(repo)
+        self.match = match.match(repo.root, b'', [], inc, exc)
+        self.restrict = kwtools[b'hgcmd'] in restricted.split()
+        self.postcommit = False
+
+        kwmaps = self.ui.configitems(b'keywordmaps')
+        if kwmaps:  # override default templates
+            self.templates = dict(kwmaps)
+        else:
+            self.templates = _defaultkwmaps(self.ui)
+###END###
+def repo(self):
+        return self._repo()
+###END###
+def escape(self):
+        '''Returns bar-separated and escaped keywords.'''
+        return b'|'.join(map(stringutil.reescape, self.templates.keys()))
+###END###
+def rekw(self):
+        '''Returns regex for unexpanded keywords.'''
+        return re.compile(br'\$(%s)\$' % self.escape)
+###END###
+def rekwexp(self):
+        '''Returns regex for expanded keywords.'''
+        return re.compile(br'\$(%s): [^$\n\r]*? \$' % self.escape)
+###END###
+def substitute(self, data, path, ctx, subfunc):
+        '''Replaces keywords in data with expanded template.'''
+
+        def kwsub(mobj):
+            kw = mobj.group(1)
+            ct = logcmdutil.maketemplater(
+                self.ui, self.repo, self.templates[kw]
+            )
+            self.ui.pushbuffer()
+            ct.show(ctx, root=self.repo.root, file=path)
+            ekw = templatefilters.firstline(self.ui.popbuffer())
+            return b'$%s: %s $' % (kw, ekw)
+
+        return subfunc(kwsub, data)
+###END###
+def linkctx(self, path, fileid):
+        '''Similar to filelog.linkrev, but returns a changectx.'''
+        return self.repo.filectx(path, fileid=fileid).changectx()
+###END###
+def expand(self, path, node, data):
+        '''Returns data with keywords expanded.'''
+        if (
+            not self.restrict
+            and self.match(path)
+            and not stringutil.binary(data)
+        ):
+            ctx = self.linkctx(path, node)
+            return self.substitute(data, path, ctx, self.rekw.sub)
+        return data
+###END###
+def iskwfile(self, cand, ctx):
+        """Returns subset of candidates which are configured for keyword
+        expansion but are not symbolic links."""
+        return [f for f in cand if self.match(f) and b'l' not in ctx.flags(f)]
+###END###
+def overwrite(self, ctx, candidates, lookup, expand, rekw=False):
+        '''Overwrites selected files expanding/shrinking keywords.'''
+        if self.restrict or lookup or self.postcommit:  # exclude kw_copy
+            candidates = self.iskwfile(candidates, ctx)
+        if not candidates:
+            return
+        kwcmd = self.restrict and lookup  # kwexpand/kwshrink
+        if self.restrict or expand and lookup:
+            mf = ctx.manifest()
+        if self.restrict or rekw:
+            re_kw = self.rekw
+        else:
+            re_kw = self.rekwexp
+        if expand:
+            msg = _(b'overwriting %s expanding keywords\n')
+        else:
+            msg = _(b'overwriting %s shrinking keywords\n')
+        for f in candidates:
+            if self.restrict:
+                data = self.repo.file(f).read(mf[f])
+            else:
+                data = self.repo.wread(f)
+            if stringutil.binary(data):
+                continue
+            if expand:
+                parents = ctx.parents()
+                if lookup:
+                    ctx = self.linkctx(f, mf[f])
+                elif self.restrict and len(parents) > 1:
+                    # merge commit
+                    # in case of conflict f is in modified state during
+                    # merge, even if f does not differ from f in parent
+                    for p in parents:
+                        if f in p and not p[f].cmp(ctx[f]):
+                            ctx = p[f].changectx()
+                            break
+                data, found = self.substitute(data, f, ctx, re_kw.subn)
+            elif self.restrict:
+                found = re_kw.search(data)
+            else:
+                data, found = _shrinktext(data, re_kw.subn)
+            if found:
+                self.ui.note(msg % f)
+                fp = self.repo.wvfs(f, b"wb", atomictemp=True)
+                fp.write(data)
+                fp.close()
+                if kwcmd:
+                    self.repo.dirstate.set_clean(f)
+                elif self.postcommit:
+                    self.repo.dirstate.update_file_p1(f, p1_tracked=True)
+###END###
+def shrink(self, fname, text):
+        '''Returns text with all keyword substitutions removed.'''
+        if self.match(fname) and not stringutil.binary(text):
+            return _shrinktext(text, self.rekwexp.sub)
+        return text
+###END###
+def shrinklines(self, fname, lines):
+        '''Returns lines with keyword substitutions removed.'''
+        if self.match(fname):
+            text = b''.join(lines)
+            if not stringutil.binary(text):
+                return _shrinktext(text, self.rekwexp.sub).splitlines(True)
+        return lines
+###END###
+def wread(self, fname, data):
+        """If in restricted mode returns data read from wdir with
+        keyword substitutions removed."""
+        if self.restrict:
+            return self.shrink(fname, data)
+        return data
+###END###
+def __init__(self, opener, kwt, path):
+        super(kwfilelog, self).__init__(opener, path)
+        self.kwt = kwt
+        self.path = path
+###END###
+def read(self, node):
+        '''Expands keywords when reading filelog.'''
+        data = super(kwfilelog, self).read(node)
+        if self.renamed(node):
+            return data
+        return self.kwt.expand(self.path, node, data)
+###END###
+def add(self, text, meta, tr, link, p1=None, p2=None):
+        '''Removes keyword substitutions when adding to filelog.'''
+        text = self.kwt.shrink(self.path, text)
+        return super(kwfilelog, self).add(text, meta, tr, link, p1, p2)
+###END###
+def cmp(self, node, text):
+        '''Removes keyword substitutions for comparison.'''
+        text = self.kwt.shrink(self.path, text)
+        return super(kwfilelog, self).cmp(node, text)
+###END###
+def file(self, f):
+            if f[0] == b'/':
+                f = f[1:]
+            return kwfilelog(self.svfs, kwt, f)
+###END###
+def wread(self, filename):
+            data = super(kwrepo, self).wread(filename)
+            return kwt.wread(filename, data)
+###END###
+def commit(self, *args, **opts):
+            # use custom commitctx for user commands
+            # other extensions can still wrap repo.commitctx directly
+            self.commitctx = self.kwcommitctx
+            try:
+                return super(kwrepo, self).commit(*args, **opts)
+            finally:
+                del self.commitctx
+###END###
+def kwcommitctx(self, ctx, error=False, origctx=None):
+            n = super(kwrepo, self).commitctx(ctx, error, origctx)
+            # no lock needed, only called from repo.commit() which already locks
+            if not kwt.postcommit:
+                restrict = kwt.restrict
+                kwt.restrict = True
+                kwt.overwrite(
+                    self[n], sorted(ctx.added() + ctx.modified()), False, True
+                )
+                kwt.restrict = restrict
+            return n
+###END###
+def rollback(self, dryrun=False, force=False):
+            with self.wlock():
+                origrestrict = kwt.restrict
+                try:
+                    if not dryrun:
+                        changed = self[b'.'].files()
+                    ret = super(kwrepo, self).rollback(dryrun, force)
+                    if not dryrun:
+                        ctx = self[b'.']
+                        modified, added = _preselect(ctx.status(), changed)
+                        kwt.restrict = False
+                        kwt.overwrite(ctx, modified, True, True)
+                        kwt.overwrite(ctx, added, True, False)
+                    return ret
+                finally:
+                    kwt.restrict = origrestrict
+###END###
+def __init__(self, ui):
+        self.ui = ui
+        self.resetstate()
+###END###
+def resetstate(self):
+        self.topics = []
+        self.topicstates = {}
+        self.starttimes = {}
+        self.startvals = {}
+        self.printed = False
+        self.lastprint = time.time() + float(self.ui.config(
+            'progress', 'delay', default=3))
+        self.lasttopic = None
+        self.indetcount = 0
+        self.refresh = float(self.ui.config(
+            'progress', 'refresh', default=0.1))
+        self.changedelay = max(3 * self.refresh,
+                               float(self.ui.config(
+                                   'progress', 'changedelay', default=1)))
+        self.order = self.ui.configlist(
+            'progress', 'format',
+            default=['topic', 'bar', 'number', 'estimate'])
+###END###
+def show(self, now, topic, pos, item, unit, total):
+        if not shouldprint(self.ui):
+            return
+        termwidth = self.width()
+        self.printed = True
+        head = ''
+        needprogress = False
+        tail = ''
+        for indicator in self.order:
+            add = ''
+            if indicator == 'topic':
+                add = topic
+            elif indicator == 'number':
+                if total:
+                    add = ('% ' + str(len(str(total))) +
+                           's/%s') % (pos, total)
+                else:
+                    add = str(pos)
+            elif indicator.startswith('item') and item:
+                slice = 'end'
+                if '-' in indicator:
+                    wid = int(indicator.split('-')[1])
+                elif '+' in indicator:
+                    slice = 'beginning'
+                    wid = int(indicator.split('+')[1])
+                else:
+                    wid = 20
+                if slice == 'end':
+                    add = item[-wid:]
+                else:
+                    add = item[:wid]
+                add += (wid - len(add)) * ' '
+            elif indicator == 'bar':
+                add = ''
+                needprogress = True
+            elif indicator == 'unit' and unit:
+                add = unit
+            elif indicator == 'estimate':
+                add = self.estimate(topic, pos, total, now)
+            elif indicator == 'speed':
+                add = self.speed(topic, pos, unit, now)
+            if not needprogress:
+                head = spacejoin(head, add)
+            else:
+                tail = spacejoin(tail, add)
+        if needprogress:
+            used = 0
+            if head:
+                used += len(head) + 1
+            if tail:
+                used += len(tail) + 1
+            progwidth = termwidth - used - 3
+            if total and pos <= total:
+                amt = pos * progwidth // total
+                bar = '=' * (amt - 1)
+                if amt > 0:
+                    bar += '>'
+                bar += ' ' * (progwidth - amt)
+            else:
+                progwidth -= 3
+                self.indetcount += 1
+                # mod the count by twice the width so we can make the
+                # cursor bounce between the right and left sides
+                amt = self.indetcount % (2 * progwidth)
+                amt -= progwidth
+                bar = (' ' * int(progwidth - abs(amt)) + '<=>' +
+                       ' ' * int(abs(amt)))
+            prog = ''.join(('[', bar , ']'))
+            out = spacejoin(head, prog, tail)
+        else:
+            out = spacejoin(head, tail)
+        sys.stderr.write('\r' + out[:termwidth])
+        self.lasttopic = topic
+        sys.stderr.flush()
+###END###
+def clear(self):
+        if not shouldprint(self.ui):
+            return
+        sys.stderr.write('\r%s\r' % (' ' * self.width()))
+###END###
+def complete(self):
+        if not shouldprint(self.ui):
+            return
+        if self.ui.configbool('progress', 'clear-complete', default=True):
+            self.clear()
+        else:
+            sys.stderr.write('\n')
+        sys.stderr.flush()
+###END###
+def width(self):
+        tw = self.ui.termwidth()
+        return min(int(self.ui.config('progress', 'width', default=tw)), tw)
+###END###
+def estimate(self, topic, pos, total, now):
+        if total is None:
+            return ''
+        initialpos = self.startvals[topic]
+        target = total - initialpos
+        delta = pos - initialpos
+        if delta > 0:
+            elapsed = now - self.starttimes[topic]
+            if elapsed > float(
+                self.ui.config('progress', 'estimate', default=2)):
+                seconds = (elapsed * (target - delta)) // delta + 1
+                return fmtremaining(seconds)
+        return ''
+###END###
+def speed(self, topic, pos, unit, now):
+        initialpos = self.startvals[topic]
+        delta = pos - initialpos
+        elapsed = now - self.starttimes[topic]
+        if elapsed > float(
+            self.ui.config('progress', 'estimate', default=2)):
+            return _('%d %s/sec') % (delta / elapsed, unit)
+        return ''
+###END###
+def progress(self, topic, pos, item='', unit='', total=None):
+        now = time.time()
+        if pos is None:
+            self.starttimes.pop(topic, None)
+            self.startvals.pop(topic, None)
+            self.topicstates.pop(topic, None)
+            # reset the progress bar if this is the outermost topic
+            if self.topics and self.topics[0] == topic and self.printed:
+                self.complete()
+                self.resetstate()
+            # truncate the list of topics assuming all topics within
+            # this one are also closed
+            if topic in self.topics:
+                self.topics = self.topics[:self.topics.index(topic)]
+        else:
+            if topic not in self.topics:
+                self.starttimes[topic] = now
+                self.startvals[topic] = pos
+                self.topics.append(topic)
+            self.topicstates[topic] = pos, item, unit, total
+            if now - self.lastprint >= self.refresh and self.topics:
+                if (self.lasttopic is None # first time we printed
+                    # not a topic change
+                    or topic == self.lasttopic
+                    # it's been long enough we should print anyway
+                    or now - self.lastprint >= self.changedelay):
+                    self.lastprint = now
+                    self.show(now, topic, *self.topicstates[topic])
+###END###
+def _quiet(self):
+            return self.debugflag or self.quiet
+###END###
+def progress(self, *args, **opts):
+            if not self._quiet():
+                self._progbar.progress(*args, **opts)
+            return super(progressui, self).progress(*args, **opts)
+###END###
+def write(self, *args, **opts):
+            if not self._quiet() and self._progbar.printed:
+                self._progbar.clear()
+            return super(progressui, self).write(*args, **opts)
+###END###
+def write_err(self, *args, **opts):
+            if not self._quiet() and self._progbar.printed:
+                self._progbar.clear()
+            return super(progressui, self).write_err(*args, **opts)
+###END###
+def __init__(self, name):
+        self.name = name
+        self.args = []
+        self.opts = {}
+###END###
+def __bytes__(self):
+        cmd = b"hg " + self.name
+        if self.opts:
+            for k, values in sorted(pycompat.iteritems(self.opts)):
+                for v in values:
+                    if v:
+                        if isinstance(v, int):
+                            fmt = b' %s %d'
+                        else:
+                            fmt = b' %s %s'
+
+                        cmd += fmt % (k, v)
+                    else:
+                        cmd += b" %s" % (k,)
+        if self.args:
+            cmd += b" "
+            cmd += b" ".join(self.args)
+        return cmd
+###END###
+def append(self, value):
+        self.args.append(value)
+###END###
+def extend(self, values):
+        self.args.extend(values)
+###END###
+def __setitem__(self, key, value):
+        values = self.opts.setdefault(key, [])
+        values.append(value)
+###END###
+def __and__(self, other):
+        return AndCommand(self, other)
+###END###
+def __init__(self, left, right):
+        self.left = left
+        self.right = right
+###END###
+def __str__(self):
+        return b"%s && %s" % (self.left, self.right)
+###END###
+def __and__(self, other):
+        return AndCommand(self, other)
+###END###
+def _extrasetup(self, name, func, fmtopic=None, csettopic=None):
+        """Called with decorator arguments to register a show view.
+
+        ``name`` is the sub-command name.
+
+        ``func`` is the function being decorated.
+
+        ``fmtopic`` is the topic in the style that will be rendered for
+        this view.
+
+        ``csettopic`` is the topic in the style to be used for a changeset
+        printer.
+
+        If ``fmtopic`` is specified, the view function will receive a
+        formatter instance. If ``csettopic`` is specified, the view
+        function will receive a changeset printer.
+        """
+        func._fmtopic = fmtopic
+        func._csettopic = csettopic
+###END###
+def __init__(self, kind, repo):
+        self.cache = {}
+        self.potentialentries = {}
+        self._kind = kind  # bookmarks or branches
+        self._repo = repo
+        self.loaded = False
+###END###
+def _load(self):
+        """Read the remotenames file, store entries matching selected kind"""
+        self.loaded = True
+        repo = self._repo
+        for node, rpath, rname in logexchange.readremotenamefile(
+            repo, self._kind
+        ):
+            name = rpath + b'/' + rname
+            self.potentialentries[name] = (node, rpath, name)
+###END###
+def _resolvedata(self, potentialentry):
+        """Check that the node for potentialentry exists and return it"""
+        if not potentialentry in self.potentialentries:
+            return None
+        node, remote, name = self.potentialentries[potentialentry]
+        repo = self._repo
+        binnode = bin(node)
+        # if the node doesn't exist, skip it
+        try:
+            repo.changelog.rev(binnode)
+        except LookupError:
+            return None
+        # Skip closed branches
+        if self._kind == b'branches' and repo[binnode].closesbranch():
+            return None
+        return [binnode]
+###END###
+def __getitem__(self, key):
+        if not self.loaded:
+            self._load()
+        val = self._fetchandcache(key)
+        if val is not None:
+            return val
+        else:
+            raise KeyError()
+###END###
+def __iter__(self):
+        return iter(self.potentialentries)
+###END###
+def __len__(self):
+        return len(self.potentialentries)
+###END###
+def __setitem__(self):
+        raise NotImplementedError
+###END###
+def __delitem__(self):
+        raise NotImplementedError
+###END###
+def _fetchandcache(self, key):
+        if key in self.cache:
+            return self.cache[key]
+        val = self._resolvedata(key)
+        if val is not None:
+            self.cache[key] = val
+            return val
+        else:
+            return None
+###END###
+def keys(self):
+        """Get a list of bookmark or branch names"""
+        if not self.loaded:
+            self._load()
+        return self.potentialentries.keys()
+###END###
+def iteritems(self):
+        """Iterate over (name, node) tuples"""
+
+        if not self.loaded:
+            self._load()
+
+        for k, vtup in pycompat.iteritems(self.potentialentries):
+            yield (k, [bin(vtup[0])])
+###END###
+def __init__(self, repo, *args):
+        self._repo = repo
+        self.clearnames()
+###END###
+def clearnames(self):
+        """Clear all remote names state"""
+        self.bookmarks = lazyremotenamedict(b"bookmarks", self._repo)
+        self.branches = lazyremotenamedict(b"branches", self._repo)
+        self._invalidatecache()
+###END###
+def _invalidatecache(self):
+        self._nodetobmarks = None
+        self._nodetobranch = None
+        self._hoisttonodes = None
+        self._nodetohoists = None
+###END###
+def bmarktonodes(self):
+        return self.bookmarks
+###END###
+def nodetobmarks(self):
+        if not self._nodetobmarks:
+            bmarktonodes = self.bmarktonodes()
+            self._nodetobmarks = {}
+            for name, node in pycompat.iteritems(bmarktonodes):
+                self._nodetobmarks.setdefault(node[0], []).append(name)
+        return self._nodetobmarks
+###END###
+def branchtonodes(self):
+        return self.branches
+###END###
+def nodetobranch(self):
+        if not self._nodetobranch:
+            branchtonodes = self.branchtonodes()
+            self._nodetobranch = {}
+            for name, nodes in pycompat.iteritems(branchtonodes):
+                for node in nodes:
+                    self._nodetobranch.setdefault(node, []).append(name)
+        return self._nodetobranch
+###END###
+def hoisttonodes(self, hoist):
+        if not self._hoisttonodes:
+            marktonodes = self.bmarktonodes()
+            self._hoisttonodes = {}
+            hoist += b'/'
+            for name, node in pycompat.iteritems(marktonodes):
+                if name.startswith(hoist):
+                    name = name[len(hoist) :]
+                    self._hoisttonodes[name] = node
+        return self._hoisttonodes
+###END###
+def nodetohoists(self, hoist):
+        if not self._nodetohoists:
+            marktonodes = self.bmarktonodes()
+            self._nodetohoists = {}
+            hoist += b'/'
+            for name, node in pycompat.iteritems(marktonodes):
+                if name.startswith(hoist):
+                    name = name[len(hoist) :]
+                    self._nodetohoists.setdefault(node[0], []).append(name)
+        return self._nodetohoists
+###END###
+def __init__(self, ui, repo, hooktype):
+        self.ui = ui
+        cfg = self.ui.config(b'notify', b'config')
+        if cfg:
+            self.ui.readconfig(cfg, sections=[b'usersubs', b'reposubs'])
+        self.repo = repo
+        self.stripcount = int(self.ui.config(b'notify', b'strip'))
+        self.root = self.strip(self.repo.root)
+        self.domain = self.ui.config(b'notify', b'domain')
+        self.mbox = self.ui.config(b'notify', b'mbox')
+        self.test = self.ui.configbool(b'notify', b'test')
+        self.charsets = mail._charsets(self.ui)
+        self.subs = self.subscribers()
+        self.merge = self.ui.configbool(b'notify', b'merge')
+        self.showfunc = self.ui.configbool(b'notify', b'showfunc')
+        self.messageidseed = self.ui.config(b'notify', b'messageidseed')
+        self.reply = self.ui.configbool(b'notify', b'reply-to-predecessor')
+
+        if self.reply and not self.messageidseed:
+            raise error.Abort(
+                _(
+                    b'notify.reply-to-predecessor used without '
+                    b'notify.messageidseed'
+                )
+            )
+
+        if self.showfunc is None:
+            self.showfunc = self.ui.configbool(b'diff', b'showfunc')
+
+        mapfile = None
+        template = self.ui.config(b'notify', hooktype) or self.ui.config(
+            b'notify', b'template'
+        )
+        if not template:
+            mapfile = self.ui.config(b'notify', b'style')
+        if not mapfile and not template:
+            template = deftemplates.get(hooktype) or single_template
+        spec = logcmdutil.templatespec(template, mapfile)
+        self.t = logcmdutil.changesettemplater(self.ui, self.repo, spec)
+###END###
+def strip(self, path):
+        '''strip leading slashes from local path, turn into web-safe path.'''
+
+        path = util.pconvert(path)
+        count = self.stripcount
+        while count > 0:
+            c = path.find(b'/')
+            if c == -1:
+                break
+            path = path[c + 1 :]
+            count -= 1
+        return path
+###END###
+def fixmail(self, addr):
+        '''try to clean up email addresses.'''
+
+        addr = stringutil.email(addr.strip())
+        if self.domain:
+            a = addr.find(b'@localhost')
+            if a != -1:
+                addr = addr[:a]
+            if b'@' not in addr:
+                return addr + b'@' + self.domain
+        return addr
+###END###
+def subscribers(self):
+        '''return list of email addresses of subscribers to this repo.'''
+        subs = set()
+        for user, pats in self.ui.configitems(b'usersubs'):
+            for pat in pats.split(b','):
+                if b'#' in pat:
+                    pat, revs = pat.split(b'#', 1)
+                else:
+                    revs = None
+                if fnmatch.fnmatch(self.repo.root, pat.strip()):
+                    subs.add((self.fixmail(user), revs))
+        for pat, users in self.ui.configitems(b'reposubs'):
+            if b'#' in pat:
+                pat, revs = pat.split(b'#', 1)
+            else:
+                revs = None
+            if fnmatch.fnmatch(self.repo.root, pat):
+                for user in users.split(b','):
+                    subs.add((self.fixmail(user), revs))
+        return [
+            (mail.addressencode(self.ui, s, self.charsets, self.test), r)
+            for s, r in sorted(subs)
+        ]
+###END###
+def node(self, ctx, **props):
+        '''format one changeset, unless it is a suppressed merge.'''
+        if not self.merge and len(ctx.parents()) > 1:
+            return False
+        self.t.show(
+            ctx,
+            changes=ctx.changeset(),
+            baseurl=self.ui.config(b'web', b'baseurl'),
+            root=self.repo.root,
+            webroot=self.root,
+            **props
+        )
+        return True
+###END###
+def skipsource(self, source):
+        '''true if incoming changes from this source should be skipped.'''
+        ok_sources = self.ui.config(b'notify', b'sources').split()
+        return source not in ok_sources
+###END###
+def send(self, ctx, count, data):
+        '''send message.'''
+
+        # Select subscribers by revset
+        subs = set()
+        for sub, spec in self.subs:
+            if spec is None:
+                subs.add(sub)
+                continue
+            revs = self.repo.revs(b'%r and %d:', spec, ctx.rev())
+            if len(revs):
+                subs.add(sub)
+                continue
+        if len(subs) == 0:
+            self.ui.debug(
+                b'notify: no subscribers to selected repo and revset\n'
+            )
+            return
+
+        try:
+            msg = mail.parsebytes(data)
+        except emailerrors.MessageParseError as inst:
+            raise error.Abort(inst)
+
+        # store sender and subject
+        sender = msg['From']
+        subject = msg['Subject']
+        if sender is not None:
+            sender = mail.headdecode(sender)
+        if subject is not None:
+            subject = mail.headdecode(subject)
+        del msg['From'], msg['Subject']
+
+        if not msg.is_multipart():
+            # create fresh mime message from scratch
+            # (multipart templates must take care of this themselves)
+            headers = msg.items()
+            payload = msg.get_payload(decode=pycompat.ispy3)
+            # for notification prefer readability over data precision
+            msg = mail.mimeencode(self.ui, payload, self.charsets, self.test)
+            # reinstate custom headers
+            for k, v in headers:
+                msg[k] = v
+
+        msg['Date'] = encoding.strfromlocal(
+            dateutil.datestr(format=b"%a, %d %b %Y %H:%M:%S %1%2")
+        )
+
+        # try to make subject line exist and be useful
+        if not subject:
+            if count > 1:
+                subject = _(b'%s: %d new changesets') % (self.root, count)
+            else:
+                s = ctx.description().lstrip().split(b'\n', 1)[0].rstrip()
+                subject = b'%s: %s' % (self.root, s)
+        maxsubject = int(self.ui.config(b'notify', b'maxsubject'))
+        if maxsubject:
+            subject = stringutil.ellipsis(subject, maxsubject)
+        msg['Subject'] = mail.headencode(
+            self.ui, subject, self.charsets, self.test
+        )
+
+        # try to make message have proper sender
+        if not sender:
+            sender = self.ui.config(b'email', b'from') or self.ui.username()
+        if b'@' not in sender or b'@localhost' in sender:
+            sender = self.fixmail(sender)
+        msg['From'] = mail.addressencode(
+            self.ui, sender, self.charsets, self.test
+        )
+
+        msg['X-Hg-Notification'] = 'changeset %s' % ctx
+        if not msg['Message-Id']:
+            msg['Message-Id'] = messageid(ctx, self.domain, self.messageidseed)
+        if self.reply:
+            unfi = self.repo.unfiltered()
+            has_node = unfi.changelog.index.has_node
+            predecessors = [
+                unfi[ctx2]
+                for ctx2 in obsutil.allpredecessors(unfi.obsstore, [ctx.node()])
+                if ctx2 != ctx.node() and has_node(ctx2)
+            ]
+            if predecessors:
+                # There is at least one predecessor, so which to pick?
+                # Ideally, there is a unique root because changesets have
+                # been evolved/rebased one step at a time. In this case,
+                # just picking the oldest known changeset provides a stable
+                # base. It doesn't help when changesets are folded. Any
+                # better solution would require storing more information
+                # in the repository.
+                pred = min(predecessors, key=lambda ctx: ctx.rev())
+                msg['In-Reply-To'] = messageid(
+                    pred, self.domain, self.messageidseed
+                )
+        msg['To'] = ', '.join(sorted(subs))
+
+        msgtext = msg.as_bytes() if pycompat.ispy3 else msg.as_string()
+        if self.test:
+            self.ui.write(msgtext)
+            if not msgtext.endswith(b'\n'):
+                self.ui.write(b'\n')
+        else:
+            self.ui.status(
+                _(b'notify: sending %d subscribers %d changes\n')
+                % (len(subs), count)
+            )
+            mail.sendmail(
+                self.ui,
+                emailutils.parseaddr(msg['From'])[1],
+                subs,
+                msgtext,
+                mbox=self.mbox,
+            )
+###END###
+def diff(self, ctx, ref=None):
+
+        maxdiff = int(self.ui.config(b'notify', b'maxdiff'))
+        prev = ctx.p1().node()
+        if ref:
+            ref = ref.node()
+        else:
+            ref = ctx.node()
+        diffopts = patch.diffallopts(self.ui)
+        diffopts.showfunc = self.showfunc
+        chunks = patch.diff(self.repo, prev, ref, opts=diffopts)
+        difflines = b''.join(chunks).splitlines()
+
+        if self.ui.configbool(b'notify', b'diffstat'):
+            maxdiffstat = int(self.ui.config(b'notify', b'maxdiffstat'))
+            s = patch.diffstat(difflines)
+            # s may be nil, don't include the header if it is
+            if s:
+                if maxdiffstat >= 0 and s.count(b"\n") > maxdiffstat + 1:
+                    s = s.split(b"\n")
+                    msg = _(b'\ndiffstat (truncated from %d to %d lines):\n\n')
+                    self.ui.write(msg % (len(s) - 2, maxdiffstat))
+                    self.ui.write(b"\n".join(s[:maxdiffstat] + s[-2:]))
+                else:
+                    self.ui.write(_(b'\ndiffstat:\n\n%s') % s)
+
+        if maxdiff == 0:
+            return
+        elif maxdiff > 0 and len(difflines) > maxdiff:
+            msg = _(b'\ndiffs (truncated from %d to %d lines):\n\n')
+            self.ui.write(msg % (len(difflines), maxdiff))
+            difflines = difflines[:maxdiff]
+        elif difflines:
+            self.ui.write(_(b'\ndiffs (%d lines):\n\n') % len(difflines))
+
+        self.ui.write(b"\n".join(difflines))
+###END###
+def lookup(self, key):
+            try:
+                _super = super(parentrevspecrepo, self)
+                return _super.lookup(key)
+            except error.RepoError:
+                pass
+
+            circ = key.find('^')
+            tilde = key.find('~')
+            if circ < 0 and tilde < 0:
+                raise
+            elif circ >= 0 and tilde >= 0:
+                end = min(circ, tilde)
+            else:
+                end = max(circ, tilde)
+
+            cl = self.changelog
+            base = key[:end]
+            try:
+                node = _super.lookup(base)
+            except error.RepoError:
+                # eek - reraise the first error
+                return _super.lookup(key)
+
+            rev = cl.rev(node)
+            suffix = key[end:]
+            i = 0
+            while i < len(suffix):
+                # foo^N => Nth parent of foo
+                # foo^0 == foo
+                # foo^1 == foo^ == 1st parent of foo
+                # foo^2 == 2nd parent of foo
+                if suffix[i] == '^':
+                    j = i + 1
+                    p = cl.parentrevs(rev)
+                    if j < len(suffix) and suffix[j].isdigit():
+                        j += 1
+                        n = int(suffix[i + 1:j])
+                        if n > 2 or n == 2 and p[1] == -1:
+                            raise
+                    else:
+                        n = 1
+                    if n:
+                        rev = p[n - 1]
+                    i = j
+                # foo~N => Nth first grandparent of foo
+                # foo~0 = foo
+                # foo~1 = foo^1 == foo^ == 1st parent of foo
+                # foo~2 = foo^1^1 == foo^^ == 1st parent of 1st parent of foo
+                elif suffix[i] == '~':
+                    j = i + 1
+                    while j < len(suffix) and suffix[j].isdigit():
+                        j += 1
+                    if j == i + 1:
+                        raise
+                    n = int(suffix[i + 1:j])
+                    for k in xrange(n):
+                        rev = cl.parentrevs(rev)[0]
+                    i = j
+                else:
+                    raise
+            return cl.node(rev)
+###END###
+def __init__(self, db, path, compression):
+        self.nullid = sha1nodeconstants.nullid
+        self._db = db
+        self._path = path
+
+        self._pathid = None
+
+        # revnum -> node
+        self._revtonode = {}
+        # node -> revnum
+        self._nodetorev = {}
+        # node -> data structure
+        self._revisions = {}
+
+        self._revisioncache = util.lrucachedict(10)
+
+        self._compengine = compression
+
+        if compression == b'zstd':
+            self._cctx = zstd.ZstdCompressor(level=3)
+            self._dctx = zstd.ZstdDecompressor()
+        else:
+            self._cctx = None
+            self._dctx = None
+
+        self._refreshindex()
+###END###
+def _refreshindex(self):
+        self._revtonode = {}
+        self._nodetorev = {}
+        self._revisions = {}
+
+        res = list(
+            self._db.execute(
+                'SELECT id FROM filepath WHERE path=?', (self._path,)
+            )
+        )
+
+        if not res:
+            self._pathid = None
+            return
+
+        self._pathid = res[0][0]
+
+        res = self._db.execute(
+            'SELECT id, revnum, node, p1rev, p2rev, linkrev, flags '
+            'FROM fileindex '
+            'WHERE pathid=? '
+            'ORDER BY revnum ASC',
+            (self._pathid,),
+        )
+
+        for i, row in enumerate(res):
+            rid, rev, node, p1rev, p2rev, linkrev, flags = row
+
+            if i != rev:
+                raise SQLiteStoreError(
+                    _(b'sqlite database has inconsistent revision numbers')
+                )
+
+            if p1rev == nullrev:
+                p1node = sha1nodeconstants.nullid
+            else:
+                p1node = self._revtonode[p1rev]
+
+            if p2rev == nullrev:
+                p2node = sha1nodeconstants.nullid
+            else:
+                p2node = self._revtonode[p2rev]
+
+            entry = revisionentry(
+                rid=rid,
+                rev=rev,
+                node=node,
+                p1rev=p1rev,
+                p2rev=p2rev,
+                p1node=p1node,
+                p2node=p2node,
+                linkrev=linkrev,
+                flags=flags,
+            )
+
+            self._revtonode[rev] = node
+            self._nodetorev[node] = rev
+            self._revisions[node] = entry
+###END###
+def __len__(self):
+        return len(self._revisions)
+###END###
+def __iter__(self):
+        return iter(pycompat.xrange(len(self._revisions)))
+###END###
+def hasnode(self, node):
+        if node == sha1nodeconstants.nullid:
+            return False
+
+        return node in self._nodetorev
+###END###
+def revs(self, start=0, stop=None):
+        return storageutil.iterrevs(
+            len(self._revisions), start=start, stop=stop
+        )
+###END###
+def parents(self, node):
+        if node == sha1nodeconstants.nullid:
+            return sha1nodeconstants.nullid, sha1nodeconstants.nullid
+
+        if node not in self._revisions:
+            raise error.LookupError(node, self._path, _(b'no node'))
+
+        entry = self._revisions[node]
+        return entry.p1node, entry.p2node
+###END###
+def parentrevs(self, rev):
+        if rev == nullrev:
+            return nullrev, nullrev
+
+        if rev not in self._revtonode:
+            raise IndexError(rev)
+
+        entry = self._revisions[self._revtonode[rev]]
+        return entry.p1rev, entry.p2rev
+###END###
+def rev(self, node):
+        if node == sha1nodeconstants.nullid:
+            return nullrev
+
+        if node not in self._nodetorev:
+            raise error.LookupError(node, self._path, _(b'no node'))
+
+        return self._nodetorev[node]
+###END###
+def node(self, rev):
+        if rev == nullrev:
+            return sha1nodeconstants.nullid
+
+        if rev not in self._revtonode:
+            raise IndexError(rev)
+
+        return self._revtonode[rev]
+###END###
+def lookup(self, node):
+        return storageutil.fileidlookup(self, node, self._path)
+###END###
+def linkrev(self, rev):
+        if rev == nullrev:
+            return nullrev
+
+        if rev not in self._revtonode:
+            raise IndexError(rev)
+
+        entry = self._revisions[self._revtonode[rev]]
+        return entry.linkrev
+###END###
+def iscensored(self, rev):
+        if rev == nullrev:
+            return False
+
+        if rev not in self._revtonode:
+            raise IndexError(rev)
+
+        return self._revisions[self._revtonode[rev]].flags & FLAG_CENSORED
+###END###
+def commonancestorsheads(self, node1, node2):
+        rev1 = self.rev(node1)
+        rev2 = self.rev(node2)
+
+        ancestors = ancestor.commonancestorsheads(self.parentrevs, rev1, rev2)
+        return pycompat.maplist(self.node, ancestors)
+###END###
+def descendants(self, revs):
+        # TODO we could implement this using a recursive SQL query, which
+        # might be faster.
+        return dagop.descendantrevs(revs, self.revs, self.parentrevs)
+###END###
+def heads(self, start=None, stop=None):
+        if start is None and stop is None:
+            if not len(self):
+                return [sha1nodeconstants.nullid]
+
+        startrev = self.rev(start) if start is not None else nullrev
+        stoprevs = {self.rev(n) for n in stop or []}
+
+        revs = dagop.headrevssubset(
+            self.revs, self.parentrevs, startrev=startrev, stoprevs=stoprevs
+        )
+
+        return [self.node(rev) for rev in revs]
+###END###
+def children(self, node):
+        rev = self.rev(node)
+
+        res = self._db.execute(
+            'SELECT'
+            '  node '
+            '  FROM filedata '
+            '  WHERE path=? AND (p1rev=? OR p2rev=?) '
+            '  ORDER BY revnum ASC',
+            (self._path, rev, rev),
+        )
+
+        return [row[0] for row in res]
+###END###
+def size(self, rev):
+        if rev == nullrev:
+            return 0
+
+        if rev not in self._revtonode:
+            raise IndexError(rev)
+
+        node = self._revtonode[rev]
+
+        if self.renamed(node):
+            return len(self.read(node))
+
+        return len(self.revision(node))
+###END###
+def revision(self, node, raw=False, _verifyhash=True):
+        if node in (sha1nodeconstants.nullid, nullrev):
+            return b''
+
+        if isinstance(node, int):
+            node = self.node(node)
+
+        if node not in self._nodetorev:
+            raise error.LookupError(node, self._path, _(b'no node'))
+
+        if node in self._revisioncache:
+            return self._revisioncache[node]
+
+        # Because we have a fulltext revision cache, we are able to
+        # short-circuit delta chain traversal and decompression as soon as
+        # we encounter a revision in the cache.
+
+        stoprids = {self._revisions[n].rid: n for n in self._revisioncache}
+
+        if not stoprids:
+            stoprids[-1] = None
+
+        fulltext = resolvedeltachain(
+            self._db,
+            self._pathid,
+            node,
+            self._revisioncache,
+            stoprids,
+            zstddctx=self._dctx,
+        )
+
+        # Don't verify hashes if parent nodes were rewritten, as the hash
+        # wouldn't verify.
+        if self._revisions[node].flags & (FLAG_MISSING_P1 | FLAG_MISSING_P2):
+            _verifyhash = False
+
+        if _verifyhash:
+            self._checkhash(fulltext, node)
+            self._revisioncache[node] = fulltext
+
+        return fulltext
+###END###
+def rawdata(self, *args, **kwargs):
+        return self.revision(*args, **kwargs)
+###END###
+def read(self, node):
+        return storageutil.filtermetadata(self.revision(node))
+###END###
+def renamed(self, node):
+        return storageutil.filerevisioncopied(self, node)
+###END###
+def cmp(self, node, fulltext):
+        return not storageutil.filedataequivalent(self, node, fulltext)
+###END###
+def emitrevisions(
+        self,
+        nodes,
+        nodesorder=None,
+        revisiondata=False,
+        assumehaveparentrevisions=False,
+        deltamode=repository.CG_DELTAMODE_STD,
+        sidedata_helpers=None,
+    ):
+        if nodesorder not in (b'nodes', b'storage', b'linear', None):
+            raise error.ProgrammingError(
+                b'unhandled value for nodesorder: %s' % nodesorder
+            )
+
+        nodes = [n for n in nodes if n != sha1nodeconstants.nullid]
+
+        if not nodes:
+            return
+
+        # TODO perform in a single query.
+        res = self._db.execute(
+            'SELECT revnum, deltaid FROM fileindex '
+            'WHERE pathid=? '
+            '    AND node in (%s)' % (','.join(['?'] * len(nodes))),
+            tuple([self._pathid] + nodes),
+        )
+
+        deltabases = {}
+
+        for rev, deltaid in res:
+            res = self._db.execute(
+                'SELECT revnum from fileindex WHERE pathid=? AND deltaid=?',
+                (self._pathid, deltaid),
+            )
+            deltabases[rev] = res.fetchone()[0]
+
+        # TODO define revdifffn so we can use delta from storage.
+        for delta in storageutil.emitrevisions(
+            self,
+            nodes,
+            nodesorder,
+            sqliterevisiondelta,
+            deltaparentfn=deltabases.__getitem__,
+            revisiondata=revisiondata,
+            assumehaveparentrevisions=assumehaveparentrevisions,
+            deltamode=deltamode,
+            sidedata_helpers=sidedata_helpers,
+        ):
+
+            yield delta
+###END###
+def add(self, filedata, meta, transaction, linkrev, p1, p2):
+        if meta or filedata.startswith(b'\x01\n'):
+            filedata = storageutil.packmeta(meta, filedata)
+
+        rev = self.addrevision(filedata, transaction, linkrev, p1, p2)
+        return self.node(rev)
+###END###
+def addrevision(
+        self,
+        revisiondata,
+        transaction,
+        linkrev,
+        p1,
+        p2,
+        node=None,
+        flags=0,
+        cachedelta=None,
+    ):
+        if flags:
+            raise SQLiteStoreError(_(b'flags not supported on revisions'))
+
+        validatehash = node is not None
+        node = node or storageutil.hashrevisionsha1(revisiondata, p1, p2)
+
+        if validatehash:
+            self._checkhash(revisiondata, node, p1, p2)
+
+        rev = self._nodetorev.get(node)
+        if rev is not None:
+            return rev
+
+        rev = self._addrawrevision(
+            node, revisiondata, transaction, linkrev, p1, p2
+        )
+
+        self._revisioncache[node] = revisiondata
+        return rev
+###END###
+def addgroup(
+        self,
+        deltas,
+        linkmapper,
+        transaction,
+        addrevisioncb=None,
+        duplicaterevisioncb=None,
+        maybemissingparents=False,
+    ):
+        empty = True
+
+        for (
+            node,
+            p1,
+            p2,
+            linknode,
+            deltabase,
+            delta,
+            wireflags,
+            sidedata,
+        ) in deltas:
+            storeflags = 0
+
+            if wireflags & repository.REVISION_FLAG_CENSORED:
+                storeflags |= FLAG_CENSORED
+
+            if wireflags & ~repository.REVISION_FLAG_CENSORED:
+                raise SQLiteStoreError(b'unhandled revision flag')
+
+            if maybemissingparents:
+                if p1 != sha1nodeconstants.nullid and not self.hasnode(p1):
+                    p1 = sha1nodeconstants.nullid
+                    storeflags |= FLAG_MISSING_P1
+
+                if p2 != sha1nodeconstants.nullid and not self.hasnode(p2):
+                    p2 = sha1nodeconstants.nullid
+                    storeflags |= FLAG_MISSING_P2
+
+            baserev = self.rev(deltabase)
+
+            # If base is censored, delta must be full replacement in a single
+            # patch operation.
+            if baserev != nullrev and self.iscensored(baserev):
+                hlen = struct.calcsize(b'>lll')
+                oldlen = len(self.rawdata(deltabase, _verifyhash=False))
+                newlen = len(delta) - hlen
+
+                if delta[:hlen] != mdiff.replacediffheader(oldlen, newlen):
+                    raise error.CensoredBaseError(self._path, deltabase)
+
+            if not (storeflags & FLAG_CENSORED) and storageutil.deltaiscensored(
+                delta, baserev, lambda x: len(self.rawdata(x))
+            ):
+                storeflags |= FLAG_CENSORED
+
+            linkrev = linkmapper(linknode)
+
+            if node in self._revisions:
+                # Possibly reset parents to make them proper.
+                entry = self._revisions[node]
+
+                if (
+                    entry.flags & FLAG_MISSING_P1
+                    and p1 != sha1nodeconstants.nullid
+                ):
+                    entry.p1node = p1
+                    entry.p1rev = self._nodetorev[p1]
+                    entry.flags &= ~FLAG_MISSING_P1
+
+                    self._db.execute(
+                        'UPDATE fileindex SET p1rev=?, flags=? WHERE id=?',
+                        (self._nodetorev[p1], entry.flags, entry.rid),
+                    )
+
+                if (
+                    entry.flags & FLAG_MISSING_P2
+                    and p2 != sha1nodeconstants.nullid
+                ):
+                    entry.p2node = p2
+                    entry.p2rev = self._nodetorev[p2]
+                    entry.flags &= ~FLAG_MISSING_P2
+
+                    self._db.execute(
+                        'UPDATE fileindex SET p2rev=?, flags=? WHERE id=?',
+                        (self._nodetorev[p1], entry.flags, entry.rid),
+                    )
+
+                if duplicaterevisioncb:
+                    duplicaterevisioncb(self, self.rev(node))
+                empty = False
+                continue
+
+            if deltabase == sha1nodeconstants.nullid:
+                text = mdiff.patch(b'', delta)
+                storedelta = None
+            else:
+                text = None
+                storedelta = (deltabase, delta)
+
+            rev = self._addrawrevision(
+                node,
+                text,
+                transaction,
+                linkrev,
+                p1,
+                p2,
+                storedelta=storedelta,
+                flags=storeflags,
+            )
+
+            if addrevisioncb:
+                addrevisioncb(self, rev)
+            empty = False
+
+        return not empty
+###END###
+def censorrevision(self, tr, censornode, tombstone=b''):
+        tombstone = storageutil.packmeta({b'censored': tombstone}, b'')
+
+        # This restriction is cargo culted from revlogs and makes no sense for
+        # SQLite, since columns can be resized at will.
+        if len(tombstone) > len(self.rawdata(censornode)):
+            raise error.Abort(
+                _(b'censor tombstone must be no longer than censored data')
+            )
+
+        # We need to replace the censored revision's data with the tombstone.
+        # But replacing that data will have implications for delta chains that
+        # reference it.
+        #
+        # While "better," more complex strategies are possible, we do something
+        # simple: we find delta chain children of the censored revision and we
+        # replace those incremental deltas with fulltexts of their corresponding
+        # revision. Then we delete the now-unreferenced delta and original
+        # revision and insert a replacement.
+
+        # Find the delta to be censored.
+        censoreddeltaid = self._db.execute(
+            'SELECT deltaid FROM fileindex WHERE id=?',
+            (self._revisions[censornode].rid,),
+        ).fetchone()[0]
+
+        # Find all its delta chain children.
+        # TODO once we support storing deltas for !files, we'll need to look
+        # for those delta chains too.
+        rows = list(
+            self._db.execute(
+                'SELECT id, pathid, node FROM fileindex '
+                'WHERE deltabaseid=? OR deltaid=?',
+                (censoreddeltaid, censoreddeltaid),
+            )
+        )
+
+        for row in rows:
+            rid, pathid, node = row
+
+            fulltext = resolvedeltachain(
+                self._db, pathid, node, {}, {-1: None}, zstddctx=self._dctx
+            )
+
+            deltahash = hashutil.sha1(fulltext).digest()
+
+            if self._compengine == b'zstd':
+                deltablob = self._cctx.compress(fulltext)
+                compression = COMPRESSION_ZSTD
+            elif self._compengine == b'zlib':
+                deltablob = zlib.compress(fulltext)
+                compression = COMPRESSION_ZLIB
+            elif self._compengine == b'none':
+                deltablob = fulltext
+                compression = COMPRESSION_NONE
+            else:
+                raise error.ProgrammingError(
+                    b'unhandled compression engine: %s' % self._compengine
+                )
+
+            if len(deltablob) >= len(fulltext):
+                deltablob = fulltext
+                compression = COMPRESSION_NONE
+
+            deltaid = insertdelta(self._db, compression, deltahash, deltablob)
+
+            self._db.execute(
+                'UPDATE fileindex SET deltaid=?, deltabaseid=NULL '
+                'WHERE id=?',
+                (deltaid, rid),
+            )
+
+        # Now create the tombstone delta and replace the delta on the censored
+        # node.
+        deltahash = hashutil.sha1(tombstone).digest()
+        tombstonedeltaid = insertdelta(
+            self._db, COMPRESSION_NONE, deltahash, tombstone
+        )
+
+        flags = self._revisions[censornode].flags
+        flags |= FLAG_CENSORED
+
+        self._db.execute(
+            'UPDATE fileindex SET flags=?, deltaid=?, deltabaseid=NULL '
+            'WHERE pathid=? AND node=?',
+            (flags, tombstonedeltaid, self._pathid, censornode),
+        )
+
+        self._db.execute('DELETE FROM delta WHERE id=?', (censoreddeltaid,))
+
+        self._refreshindex()
+        self._revisioncache.clear()
+###END###
+def getstrippoint(self, minlink):
+        return storageutil.resolvestripinfo(
+            minlink,
+            len(self) - 1,
+            [self.rev(n) for n in self.heads()],
+            self.linkrev,
+            self.parentrevs,
+        )
+###END###
+def strip(self, minlink, transaction):
+        if not len(self):
+            return
+
+        rev, _ignored = self.getstrippoint(minlink)
+
+        if rev == len(self):
+            return
+
+        for rev in self.revs(rev):
+            self._db.execute(
+                'DELETE FROM fileindex WHERE pathid=? AND node=?',
+                (self._pathid, self.node(rev)),
+            )
+
+        # TODO how should we garbage collect data in delta table?
+
+        self._refreshindex()
+###END###
+def files(self):
+        return []
+###END###
+def sidedata(self, nodeorrev, _df=None):
+        # Not supported for now
+        return {}
+###END###
+def storageinfo(
+        self,
+        exclusivefiles=False,
+        sharedfiles=False,
+        revisionscount=False,
+        trackedsize=False,
+        storedsize=False,
+    ):
+        d = {}
+
+        if exclusivefiles:
+            d[b'exclusivefiles'] = []
+
+        if sharedfiles:
+            # TODO list sqlite file(s) here.
+            d[b'sharedfiles'] = []
+
+        if revisionscount:
+            d[b'revisionscount'] = len(self)
+
+        if trackedsize:
+            d[b'trackedsize'] = sum(
+                len(self.revision(node)) for node in self._nodetorev
+            )
+
+        if storedsize:
+            # TODO implement this?
+            d[b'storedsize'] = None
+
+        return d
+###END###
+def verifyintegrity(self, state):
+        state[b'skipread'] = set()
+
+        for rev in self:
+            node = self.node(rev)
+
+            try:
+                self.revision(node)
+            except Exception as e:
+                yield sqliteproblem(
+                    error=_(b'unpacking %s: %s') % (short(node), e), node=node
+                )
+
+                state[b'skipread'].add(node)
+###END###
+def _checkhash(self, fulltext, node, p1=None, p2=None):
+        if p1 is None and p2 is None:
+            p1, p2 = self.parents(node)
+
+        if node == storageutil.hashrevisionsha1(fulltext, p1, p2):
+            return
+
+        try:
+            del self._revisioncache[node]
+        except KeyError:
+            pass
+
+        if storageutil.iscensoredtext(fulltext):
+            raise error.CensoredNodeError(self._path, node, fulltext)
+
+        raise SQLiteStoreError(_(b'integrity check failed on %s') % self._path)
+###END###
+def _addrawrevision(
+        self,
+        node,
+        revisiondata,
+        transaction,
+        linkrev,
+        p1,
+        p2,
+        storedelta=None,
+        flags=0,
+    ):
+        if self._pathid is None:
+            res = self._db.execute(
+                'INSERT INTO filepath (path) VALUES (?)', (self._path,)
+            )
+            self._pathid = res.lastrowid
+
+        # For simplicity, always store a delta against p1.
+        # TODO we need a lot more logic here to make behavior reasonable.
+
+        if storedelta:
+            deltabase, delta = storedelta
+
+            if isinstance(deltabase, int):
+                deltabase = self.node(deltabase)
+
+        else:
+            assert revisiondata is not None
+            deltabase = p1
+
+            if deltabase == sha1nodeconstants.nullid:
+                delta = revisiondata
+            else:
+                delta = mdiff.textdiff(
+                    self.revision(self.rev(deltabase)), revisiondata
+                )
+
+        # File index stores a pointer to its delta and the parent delta.
+        # The parent delta is stored via a pointer to the fileindex PK.
+        if deltabase == sha1nodeconstants.nullid:
+            baseid = None
+        else:
+            baseid = self._revisions[deltabase].rid
+
+        # Deltas are stored with a hash of their content. This allows
+        # us to de-duplicate. The table is configured to ignore conflicts
+        # and it is faster to just insert and silently noop than to look
+        # first.
+        deltahash = hashutil.sha1(delta).digest()
+
+        if self._compengine == b'zstd':
+            deltablob = self._cctx.compress(delta)
+            compression = COMPRESSION_ZSTD
+        elif self._compengine == b'zlib':
+            deltablob = zlib.compress(delta)
+            compression = COMPRESSION_ZLIB
+        elif self._compengine == b'none':
+            deltablob = delta
+            compression = COMPRESSION_NONE
+        else:
+            raise error.ProgrammingError(
+                b'unhandled compression engine: %s' % self._compengine
+            )
+
+        # Don't store compressed data if it isn't practical.
+        if len(deltablob) >= len(delta):
+            deltablob = delta
+            compression = COMPRESSION_NONE
+
+        deltaid = insertdelta(self._db, compression, deltahash, deltablob)
+
+        rev = len(self)
+
+        if p1 == sha1nodeconstants.nullid:
+            p1rev = nullrev
+        else:
+            p1rev = self._nodetorev[p1]
+
+        if p2 == sha1nodeconstants.nullid:
+            p2rev = nullrev
+        else:
+            p2rev = self._nodetorev[p2]
+
+        rid = self._db.execute(
+            'INSERT INTO fileindex ('
+            '    pathid, revnum, node, p1rev, p2rev, linkrev, flags, '
+            '    deltaid, deltabaseid) '
+            '    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (
+                self._pathid,
+                rev,
+                node,
+                p1rev,
+                p2rev,
+                linkrev,
+                flags,
+                deltaid,
+                baseid,
+            ),
+        ).lastrowid
+
+        entry = revisionentry(
+            rid=rid,
+            rev=rev,
+            node=node,
+            p1rev=p1rev,
+            p2rev=p2rev,
+            p1node=p1,
+            p2node=p2,
+            linkrev=linkrev,
+            flags=flags,
+        )
+
+        self._nodetorev[node] = rev
+        self._revtonode[rev] = node
+        self._revisions[node] = entry
+
+        return rev
+###END###
+def cancopy(self):
+        return False
+###END###
+def transaction(self, *args, **kwargs):
+        current = self.currenttransaction()
+
+        tr = super(sqliterepository, self).transaction(*args, **kwargs)
+
+        if current:
+            return tr
+
+        self._dbconn.execute('BEGIN TRANSACTION')
+
+        def committransaction(_):
+            self._dbconn.commit()
+
+        tr.addfinalize(b'sqlitestore', committransaction)
+
+        return tr
+###END###
+def _dbconn(self):
+        # SQLite connections can only be used on the thread that created
+        # them. In most cases, this "just works." However, hgweb uses
+        # multiple threads.
+        tid = threading.current_thread().ident
+
+        if self._db:
+            if self._db[0] == tid:
+                return self._db[1]
+
+        db = makedb(self.svfs.join(b'db.sqlite'))
+        self._db = (tid, db)
+
+        return db
+###END###
+def file(self, path):
+        if path[0] == b'/':
+            path = path[1:]
+
+        if REQUIREMENT_ZSTD in self.requirements:
+            compression = b'zstd'
+        elif REQUIREMENT_ZLIB in self.requirements:
+            compression = b'zlib'
+        elif REQUIREMENT_NONE in self.requirements:
+            compression = b'none'
+        else:
+            raise error.Abort(
+                _(
+                    b'unable to determine what compression engine '
+                    b'to use for SQLite storage'
+                )
+            )
+
+        return sqlitefilestore(self._dbconn, path, compression)
+###END###
+def __init__(self):
+        self.sections = {}
+###END###
+def __contains__(self, section):
+        return section in self.sections
+###END###
+def __iter__(self):
+        return iter(sorted(self.sections))
+###END###
+def addtitleditem(self, section, title, paragraphs):
+        """Add a titled release note entry."""
+        self.sections.setdefault(section, ([], []))
+        self.sections[section][0].append((title, paragraphs))
+###END###
+def addnontitleditem(self, section, paragraphs):
+        """Adds a non-titled release note entry.
+
+        Will be rendered as a bullet point.
+        """
+        self.sections.setdefault(section, ([], []))
+        self.sections[section][1].append(paragraphs)
+###END###
+def titledforsection(self, section):
+        """Returns titled entries in a section.
+
+        Returns a list of (title, paragraphs) tuples describing sub-sections.
+        """
+        return self.sections.get(section, ([], []))[0]
+###END###
+def nontitledforsection(self, section):
+        """Returns non-titled, bulleted paragraphs in a section."""
+        return self.sections.get(section, ([], []))[1]
+###END###
+def hastitledinsection(self, section, title):
+        return any(t[0] == title for t in self.titledforsection(section))
+###END###
+def merge(self, ui, other):
+        """Merge another instance into this one.
+
+        This is used to combine multiple sources of release notes together.
+        """
+        if not fuzz:
+            ui.warn(
+                _(
+                    b"module 'fuzzywuzzy' not found, merging of similar "
+                    b"releasenotes is disabled\n"
+                )
+            )
+
+        for section in other:
+            existingnotes = converttitled(
+                self.titledforsection(section)
+            ) + convertnontitled(self.nontitledforsection(section))
+            for title, paragraphs in other.titledforsection(section):
+                if self.hastitledinsection(section, title):
+                    # TODO prompt for resolution if different and running in
+                    # interactive mode.
+                    ui.write(
+                        _(b'%s already exists in %s section; ignoring\n')
+                        % (title, section)
+                    )
+                    continue
+
+                incoming_str = converttitled([(title, paragraphs)])[0]
+                if section == b'fix':
+                    issue = getissuenum(incoming_str)
+                    if issue:
+                        if findissue(ui, existingnotes, issue):
+                            continue
+
+                if similar(ui, existingnotes, incoming_str):
+                    continue
+
+                self.addtitleditem(section, title, paragraphs)
+
+            for paragraphs in other.nontitledforsection(section):
+                if paragraphs in self.nontitledforsection(section):
+                    continue
+
+                incoming_str = convertnontitled([paragraphs])[0]
+                if section == b'fix':
+                    issue = getissuenum(incoming_str)
+                    if issue:
+                        if findissue(ui, existingnotes, issue):
+                            continue
+
+                if similar(ui, existingnotes, incoming_str):
+                    continue
+
+                self.addnontitleditem(section, paragraphs)
+###END###
+def __init__(self, ui, repo=None):
+        if repo:
+            sections = util.sortdict(DEFAULT_SECTIONS)
+            custom_sections = getcustomadmonitions(repo)
+            if custom_sections:
+                sections.update(custom_sections)
+            self._sections = list(pycompat.iteritems(sections))
+        else:
+            self._sections = list(DEFAULT_SECTIONS)
+###END###
+def __iter__(self):
+        return iter(self._sections)
+###END###
+def names(self):
+        return [t[0] for t in self._sections]
+###END###
+def sectionfromtitle(self, title):
+        for name, value in self._sections:
+            if value == title:
+                return name
+
+        return None
+###END###
+def __init__(self, path=None):
+        """create or load the revmap, optionally associate to a file
+
+        if path is None, the revmap is entirely in-memory. the caller is
+        responsible for locking. concurrent writes to a same file is unsafe.
+        the caller needs to make sure one file is associated to at most one
+        revmap object at a time."""
+        self.path = path
+        self._rev2hsh = [None]
+        self._rev2flag = [None]
+        self._hsh2rev = {}
+        # since rename does not happen frequently, do not store path for every
+        # revision. self._renamerevs can be used for bisecting.
+        self._renamerevs = [0]
+        self._renamepaths = [b'']
+        self._lastmaxrev = -1
+        if path:
+            if os.path.exists(path):
+                self._load()
+            else:
+                # write the header so "append" can do incremental updates
+                self.flush()
+###END###
+def copyfrom(self, rhs):
+        """copy the map data from another revmap. do not affect self.path"""
+        self._rev2hsh = rhs._rev2hsh[:]
+        self._rev2flag = rhs._rev2flag[:]
+        self._hsh2rev = rhs._hsh2rev.copy()
+        self._renamerevs = rhs._renamerevs[:]
+        self._renamepaths = rhs._renamepaths[:]
+        self._lastmaxrev = -1
+###END###
+def maxrev(self):
+        """return max linelog revision number"""
+        return len(self._rev2hsh) - 1
+###END###
+def append(self, hsh, sidebranch=False, path=None, flush=False):
+        """add a binary hg hash and return the mapped linelog revision.
+        if flush is True, incrementally update the file.
+        """
+        if hsh in self._hsh2rev:
+            raise error.CorruptedFileError(
+                b'%r is in revmap already' % hex(hsh)
+            )
+        if len(hsh) != _hshlen:
+            raise hgerror.ProgrammingError(
+                b'hsh must be %d-char long' % _hshlen
+            )
+        idx = len(self._rev2hsh)
+        flag = 0
+        if sidebranch:
+            flag |= sidebranchflag
+        if path is not None and path != self._renamepaths[-1]:
+            flag |= renameflag
+            self._renamerevs.append(idx)
+            self._renamepaths.append(path)
+        self._rev2hsh.append(hsh)
+        self._rev2flag.append(flag)
+        self._hsh2rev[hsh] = idx
+        if flush:
+            self.flush()
+        return idx
+###END###
+def rev2hsh(self, rev):
+        """convert linelog revision to hg hash. return None if not found."""
+        if rev > self.maxrev or rev < 0:
+            return None
+        return self._rev2hsh[rev]
+###END###
+def rev2flag(self, rev):
+        """get the flag (uint8) for a given linelog revision.
+        return None if revision does not exist.
+        """
+        if rev > self.maxrev or rev < 0:
+            return None
+        return self._rev2flag[rev]
+###END###
+def rev2path(self, rev):
+        """get the path for a given linelog revision.
+        return None if revision does not exist.
+        """
+        if rev > self.maxrev or rev < 0:
+            return None
+        idx = bisect.bisect_right(self._renamerevs, rev) - 1
+        return self._renamepaths[idx]
+###END###
+def hsh2rev(self, hsh):
+        """convert hg hash to linelog revision. return None if not found."""
+        return self._hsh2rev.get(hsh)
+###END###
+def clear(self, flush=False):
+        """make the map empty. if flush is True, write to disk"""
+        # rev 0 is reserved, real rev starts from 1
+        self._rev2hsh = [None]
+        self._rev2flag = [None]
+        self._hsh2rev = {}
+        self._rev2path = [b'']
+        self._lastmaxrev = -1
+        if flush:
+            self.flush()
+###END###
+def flush(self):
+        """write the state down to the file"""
+        if not self.path:
+            return
+        if self._lastmaxrev == -1:  # write the entire file
+            with open(self.path, b'wb') as f:
+                f.write(self.HEADER)
+                for i in pycompat.xrange(1, len(self._rev2hsh)):
+                    self._writerev(i, f)
+        else:  # append incrementally
+            with open(self.path, b'ab') as f:
+                for i in pycompat.xrange(
+                    self._lastmaxrev + 1, len(self._rev2hsh)
+                ):
+                    self._writerev(i, f)
+        self._lastmaxrev = self.maxrev
+###END###
+def _load(self):
+        """load state from file"""
+        if not self.path:
+            return
+        # use local variables in a loop. CPython uses LOAD_FAST for them,
+        # which is faster than both LOAD_CONST and LOAD_GLOBAL.
+        flaglen = 1
+        hshlen = _hshlen
+        with open(self.path, b'rb') as f:
+            if f.read(len(self.HEADER)) != self.HEADER:
+                raise error.CorruptedFileError()
+            self.clear(flush=False)
+            while True:
+                buf = f.read(flaglen)
+                if not buf:
+                    break
+                flag = ord(buf)
+                rev = len(self._rev2hsh)
+                if flag & renameflag:
+                    path = self._readcstr(f)
+                    self._renamerevs.append(rev)
+                    self._renamepaths.append(path)
+                hsh = f.read(hshlen)
+                if len(hsh) != hshlen:
+                    raise error.CorruptedFileError()
+                self._hsh2rev[hsh] = rev
+                self._rev2flag.append(flag)
+                self._rev2hsh.append(hsh)
+        self._lastmaxrev = self.maxrev
+###END###
+def _writerev(self, rev, f):
+        """append a revision data to file"""
+        flag = self._rev2flag[rev]
+        hsh = self._rev2hsh[rev]
+        f.write(struct.pack(b'B', flag))
+        if flag & renameflag:
+            path = self.rev2path(rev)
+            if path is None:
+                raise error.CorruptedFileError(b'cannot find path for %s' % rev)
+            f.write(path + b'\0')
+        f.write(hsh)
+###END###
+def _readcstr(f):
+        """read a C-language-like '\0'-terminated string"""
+        buf = b''
+        while True:
+            ch = f.read(1)
+            if not ch:  # unexpected eof
+                raise error.CorruptedFileError()
+            if ch == b'\0':
+                break
+            buf += ch
+        return buf
+###END###
+def __contains__(self, f):
+        """(fctx or (node, path)) -> bool.
+        test if (node, path) is in the map, and is not in a side branch.
+        f can be either a tuple of (node, path), or a fctx.
+        """
+        if isinstance(f, tuple):  # f: (node, path)
+            hsh, path = f
+        else:  # f: fctx
+            hsh, path = f.node(), f.path()
+        rev = self.hsh2rev(hsh)
+        if rev is None:
+            return False
+        if path is not None and path != self.rev2path(rev):
+            return False
+        return (self.rev2flag(rev) & sidebranchflag) == 0
+###END###
+def __init__(self, ui, repotype, path=None, revs=None):
+        common.converter_source.__init__(self, ui, repotype, path, revs)
+        if revs and len(revs) > 1:
+            raise error.Abort(
+                _(
+                    b'monotone source does not support specifying '
+                    b'multiple revs'
+                )
+            )
+        common.commandline.__init__(self, ui, b'mtn')
+
+        self.ui = ui
+        self.path = path
+        self.automatestdio = False
+        self.revs = revs
+
+        norepo = common.NoRepo(
+            _(b"%s does not look like a monotone repository") % path
+        )
+        if not os.path.exists(os.path.join(path, b'_MTN')):
+            # Could be a monotone repository (SQLite db file)
+            try:
+                f = open(path, b'rb')
+                header = f.read(16)
+                f.close()
+            except IOError:
+                header = b''
+            if header != b'SQLite format 3\x00':
+                raise norepo
+
+        # regular expressions for parsing monotone output
+        space = br'\s*'
+        name = br'\s+"((?:\\"|[^"])*)"\s*'
+        value = name
+        revision = br'\s+\[(\w+)\]\s*'
+        lines = br'(?:.|\n)+'
+
+        self.dir_re = re.compile(space + b"dir" + name)
+        self.file_re = re.compile(
+            space + b"file" + name + b"content" + revision
+        )
+        self.add_file_re = re.compile(
+            space + b"add_file" + name + b"content" + revision
+        )
+        self.patch_re = re.compile(
+            space + b"patch" + name + b"from" + revision + b"to" + revision
+        )
+        self.rename_re = re.compile(space + b"rename" + name + b"to" + name)
+        self.delete_re = re.compile(space + b"delete" + name)
+        self.tag_re = re.compile(space + b"tag" + name + b"revision" + revision)
+        self.cert_re = re.compile(
+            lines + space + b"name" + name + b"value" + value
+        )
+
+        attr = space + b"file" + lines + space + b"attr" + space
+        self.attr_execute_re = re.compile(
+            attr + b'"mtn:execute"' + space + b'"true"'
+        )
+
+        # cached data
+        self.manifest_rev = None
+        self.manifest = None
+        self.files = None
+        self.dirs = None
+
+        common.checktool(b'mtn', abort=False)
+###END###
+def mtnrun(self, *args, **kwargs):
+        if self.automatestdio:
+            return self.mtnrunstdio(*args, **kwargs)
+        else:
+            return self.mtnrunsingle(*args, **kwargs)
+###END###
+def mtnrunsingle(self, *args, **kwargs):
+        kwargs['d'] = self.path
+        return self.run0(b'automate', *args, **kwargs)
+###END###
+def mtnrunstdio(self, *args, **kwargs):
+        # Prepare the command in automate stdio format
+        kwargs = pycompat.byteskwargs(kwargs)
+        command = []
+        for k, v in pycompat.iteritems(kwargs):
+            command.append(b"%d:%s" % (len(k), k))
+            if v:
+                command.append(b"%d:%s" % (len(v), v))
+        if command:
+            command.insert(0, b'o')
+            command.append(b'e')
+
+        command.append(b'l')
+        for arg in args:
+            command.append(b"%d:%s" % (len(arg), arg))
+        command.append(b'e')
+        command = b''.join(command)
+
+        self.ui.debug(b"mtn: sending '%s'\n" % command)
+        self.mtnwritefp.write(command)
+        self.mtnwritefp.flush()
+
+        return self.mtnstdioreadcommandoutput(command)
+###END###
+def mtnstdioreadpacket(self):
+        read = None
+        commandnbr = b''
+        while read != b':':
+            read = self.mtnreadfp.read(1)
+            if not read:
+                raise error.Abort(_(b'bad mtn packet - no end of commandnbr'))
+            commandnbr += read
+        commandnbr = commandnbr[:-1]
+
+        stream = self.mtnreadfp.read(1)
+        if stream not in b'mewptl':
+            raise error.Abort(
+                _(b'bad mtn packet - bad stream type %s') % stream
+            )
+
+        read = self.mtnreadfp.read(1)
+        if read != b':':
+            raise error.Abort(_(b'bad mtn packet - no divider before size'))
+
+        read = None
+        lengthstr = b''
+        while read != b':':
+            read = self.mtnreadfp.read(1)
+            if not read:
+                raise error.Abort(_(b'bad mtn packet - no end of packet size'))
+            lengthstr += read
+        try:
+            length = pycompat.long(lengthstr[:-1])
+        except TypeError:
+            raise error.Abort(
+                _(b'bad mtn packet - bad packet size %s') % lengthstr
+            )
+
+        read = self.mtnreadfp.read(length)
+        if len(read) != length:
+            raise error.Abort(
+                _(
+                    b"bad mtn packet - unable to read full packet "
+                    b"read %s of %s"
+                )
+                % (len(read), length)
+            )
+
+        return (commandnbr, stream, length, read)
+###END###
+def mtnstdioreadcommandoutput(self, command):
+        retval = []
+        while True:
+            commandnbr, stream, length, output = self.mtnstdioreadpacket()
+            self.ui.debug(
+                b'mtn: read packet %s:%s:%d\n' % (commandnbr, stream, length)
+            )
+
+            if stream == b'l':
+                # End of command
+                if output != b'0':
+                    raise error.Abort(
+                        _(b"mtn command '%s' returned %s") % (command, output)
+                    )
+                break
+            elif stream in b'ew':
+                # Error, warning output
+                self.ui.warn(_(b'%s error:\n') % self.command)
+                self.ui.warn(output)
+            elif stream == b'p':
+                # Progress messages
+                self.ui.debug(b'mtn: ' + output)
+            elif stream == b'm':
+                # Main stream - command output
+                retval.append(output)
+
+        return b''.join(retval)
+###END###
+def mtnloadmanifest(self, rev):
+        if self.manifest_rev == rev:
+            return
+        self.manifest = self.mtnrun(b"get_manifest_of", rev).split(b"\n\n")
+        self.manifest_rev = rev
+        self.files = {}
+        self.dirs = {}
+
+        for e in self.manifest:
+            m = self.file_re.match(e)
+            if m:
+                attr = b""
+                name = m.group(1)
+                node = m.group(2)
+                if self.attr_execute_re.match(e):
+                    attr += b"x"
+                self.files[name] = (node, attr)
+            m = self.dir_re.match(e)
+            if m:
+                self.dirs[m.group(1)] = True
+###END###
+def mtnisfile(self, name, rev):
+        # a non-file could be a directory or a deleted or renamed file
+        self.mtnloadmanifest(rev)
+        return name in self.files
+###END###
+def mtnisdir(self, name, rev):
+        self.mtnloadmanifest(rev)
+        return name in self.dirs
+###END###
+def mtngetcerts(self, rev):
+        certs = {
+            b"author": b"<missing>",
+            b"date": b"<missing>",
+            b"changelog": b"<missing>",
+            b"branch": b"<missing>",
+        }
+        certlist = self.mtnrun(b"certs", rev)
+        # mtn < 0.45:
+        #   key "test@selenic.com"
+        # mtn >= 0.45:
+        #   key [ff58a7ffb771907c4ff68995eada1c4da068d328]
+        certlist = re.split(br'\n\n {6}key ["\[]', certlist)
+        for e in certlist:
+            m = self.cert_re.match(e)
+            if m:
+                name, value = m.groups()
+                value = value.replace(br'\"', b'"')
+                value = value.replace(br'\\', b'\\')
+                certs[name] = value
+        # Monotone may have subsecond dates: 2005-02-05T09:39:12.364306
+        # and all times are stored in UTC
+        certs[b"date"] = certs[b"date"].split(b'.')[0] + b" UTC"
+        return certs
+###END###
+def getheads(self):
+        if not self.revs:
+            return self.mtnrun(b"leaves").splitlines()
+        else:
+            return self.revs
+###END###
+def getchanges(self, rev, full):
+        if full:
+            raise error.Abort(
+                _(b"convert from monotone does not support --full")
+            )
+        revision = self.mtnrun(b"get_revision", rev).split(b"\n\n")
+        files = {}
+        ignoremove = {}
+        renameddirs = []
+        copies = {}
+        for e in revision:
+            m = self.add_file_re.match(e)
+            if m:
+                files[m.group(1)] = rev
+                ignoremove[m.group(1)] = rev
+            m = self.patch_re.match(e)
+            if m:
+                files[m.group(1)] = rev
+            # Delete/rename is handled later when the convert engine
+            # discovers an IOError exception from getfile,
+            # but only if we add the "from" file to the list of changes.
+            m = self.delete_re.match(e)
+            if m:
+                files[m.group(1)] = rev
+            m = self.rename_re.match(e)
+            if m:
+                toname = m.group(2)
+                fromname = m.group(1)
+                if self.mtnisfile(toname, rev):
+                    ignoremove[toname] = 1
+                    copies[toname] = fromname
+                    files[toname] = rev
+                    files[fromname] = rev
+                elif self.mtnisdir(toname, rev):
+                    renameddirs.append((fromname, toname))
+
+        # Directory renames can be handled only once we have recorded
+        # all new files
+        for fromdir, todir in renameddirs:
+            renamed = {}
+            for tofile in self.files:
+                if tofile in ignoremove:
+                    continue
+                if tofile.startswith(todir + b'/'):
+                    renamed[tofile] = fromdir + tofile[len(todir) :]
+                    # Avoid chained moves like:
+                    # d1(/a) => d3/d1(/a)
+                    # d2 => d3
+                    ignoremove[tofile] = 1
+            for tofile, fromfile in renamed.items():
+                self.ui.debug(
+                    b"copying file in renamed directory from '%s' to '%s'"
+                    % (fromfile, tofile),
+                    b'\n',
+                )
+                files[tofile] = rev
+                copies[tofile] = fromfile
+            for fromfile in renamed.values():
+                files[fromfile] = rev
+
+        return (files.items(), copies, set())
+###END###
+def getfile(self, name, rev):
+        if not self.mtnisfile(name, rev):
+            return None, None
+        try:
+            data = self.mtnrun(b"get_file_of", name, r=rev)
+        except Exception:
+            return None, None
+        self.mtnloadmanifest(rev)
+        node, attr = self.files.get(name, (None, b""))
+        return data, attr
+###END###
+def getcommit(self, rev):
+        extra = {}
+        certs = self.mtngetcerts(rev)
+        if certs.get(b'suspend') == certs[b"branch"]:
+            extra[b'close'] = b'1'
+        dateformat = b"%Y-%m-%dT%H:%M:%S"
+        return common.commit(
+            author=certs[b"author"],
+            date=dateutil.datestr(dateutil.strdate(certs[b"date"], dateformat)),
+            desc=certs[b"changelog"],
+            rev=rev,
+            parents=self.mtnrun(b"parents", rev).splitlines(),
+            branch=certs[b"branch"],
+            extra=extra,
+        )
+###END###
+def gettags(self):
+        tags = {}
+        for e in self.mtnrun(b"tags").split(b"\n\n"):
+            m = self.tag_re.match(e)
+            if m:
+                tags[m.group(1)] = m.group(2)
+        return tags
+###END###
+def getchangedfiles(self, rev, i):
+        # This function is only needed to support --filemap
+        # ... and we don't support that
+        raise NotImplementedError
+###END###
+def before(self):
+        # Check if we have a new enough version to use automate stdio
+        try:
+            versionstr = self.mtnrunsingle(b"interface_version")
+            version = float(versionstr)
+        except Exception:
+            raise error.Abort(
+                _(b"unable to determine mtn automate interface version")
+            )
+
+        if version >= 12.0:
+            self.automatestdio = True
+            self.ui.debug(
+                b"mtn automate version %f - using automate stdio\n" % version
+            )
+
+            # launch the long-running automate stdio process
+            self.mtnwritefp, self.mtnreadfp = self._run2(
+                b'automate', b'stdio', b'-d', self.path
+            )
+            # read the headers
+            read = self.mtnreadfp.readline()
+            if read != b'format-version: 2\n':
+                raise error.Abort(
+                    _(b'mtn automate stdio header unexpected: %s') % read
+                )
+            while read != b'\n':
+                read = self.mtnreadfp.readline()
+                if not read:
+                    raise error.Abort(
+                        _(
+                            b"failed to reach end of mtn automate "
+                            b"stdio headers"
+                        )
+                    )
+        else:
+            self.ui.debug(
+                b"mtn automate version %s - not using automate stdio "
+                b"(automate >= 12.0 - mtn >= 0.46 is needed)\n" % version
+            )
+###END###
+def after(self):
+        if self.automatestdio:
+            self.mtnwritefp.close()
+            self.mtnwritefp = None
+            self.mtnreadfp.close()
+            self.mtnreadfp = None
+###END###
+def __init__(self, ui, repotype, path, revs=None):
+        common.converter_source.__init__(self, ui, repotype, path, revs=revs)
+        common.commandline.__init__(self, ui, b'darcs')
+
+        # check for _darcs, ElementTree so that we can easily skip
+        # test-convert-darcs if ElementTree is not around
+        if not os.path.exists(os.path.join(path, b'_darcs')):
+            raise NoRepo(_(b"%s does not look like a darcs repository") % path)
+
+        common.checktool(b'darcs')
+        version = self.run0(b'--version').splitlines()[0].strip()
+        if version < b'2.1':
+            raise error.Abort(
+                _(b'darcs version 2.1 or newer needed (found %r)') % version
+            )
+
+        if b"ElementTree" not in globals():
+            raise error.Abort(_(b"Python ElementTree module is not available"))
+
+        self.path = os.path.realpath(path)
+
+        self.lastrev = None
+        self.changes = {}
+        self.parents = {}
+        self.tags = {}
+
+        # Check darcs repository format
+        format = self.format()
+        if format:
+            if format in (b'darcs-1.0', b'hashed'):
+                raise NoRepo(
+                    _(
+                        b"%s repository format is unsupported, "
+                        b"please upgrade"
+                    )
+                    % format
+                )
+        else:
+            self.ui.warn(_(b'failed to detect repository format!'))
+###END###
+def before(self):
+        self.tmppath = pycompat.mkdtemp(
+            prefix=b'convert-' + os.path.basename(self.path) + b'-'
+        )
+        output, status = self.run(b'init', repodir=self.tmppath)
+        self.checkexit(status)
+
+        tree = self.xml(
+            b'changes', xml_output=True, summary=True, repodir=self.path
+        )
+        tagname = None
+        child = None
+        for elt in tree.findall(b'patch'):
+            node = elt.get(b'hash')
+            name = elt.findtext(b'name', b'')
+            if name.startswith(b'TAG '):
+                tagname = name[4:].strip()
+            elif tagname is not None:
+                self.tags[tagname] = node
+                tagname = None
+            self.changes[node] = elt
+            self.parents[child] = [node]
+            child = node
+        self.parents[child] = []
+###END###
+def after(self):
+        self.ui.debug(b'cleaning up %s\n' % self.tmppath)
+        shutil.rmtree(self.tmppath, ignore_errors=True)
+###END###
+def recode(self, s, encoding=None):
+        if isinstance(s, pycompat.unicode):
+            # XMLParser returns unicode objects for anything it can't
+            # encode into ASCII. We convert them back to str to get
+            # recode's normal conversion behavior.
+            s = s.encode('latin-1')
+        return super(darcs_source, self).recode(s, encoding)
+###END###
+def xml(self, cmd, **kwargs):
+        # NOTE: darcs is currently encoding agnostic and will print
+        # patch metadata byte-for-byte, even in the XML changelog.
+        etree = ElementTree()
+        # While we are decoding the XML as latin-1 to be as liberal as
+        # possible, etree will still raise an exception if any
+        # non-printable characters are in the XML changelog.
+        parser = XMLParser(encoding=b'latin-1')
+        p = self._run(cmd, **kwargs)
+        etree.parse(p.stdout, parser=parser)
+        p.wait()
+        self.checkexit(p.returncode)
+        return etree.getroot()
+###END###
+def format(self):
+        output, status = self.run(b'show', b'repo', repodir=self.path)
+        self.checkexit(status)
+        m = re.search(r'^\s*Format:\s*(.*)$', output, re.MULTILINE)
+        if not m:
+            return None
+        return b','.join(sorted(f.strip() for f in m.group(1).split(b',')))
+###END###
+def manifest(self):
+        man = []
+        output, status = self.run(
+            b'show', b'files', no_directories=True, repodir=self.tmppath
+        )
+        self.checkexit(status)
+        for line in output.split(b'\n'):
+            path = line[2:]
+            if path:
+                man.append(path)
+        return man
+###END###
+def getheads(self):
+        return self.parents[None]
+###END###
+def getcommit(self, rev):
+        elt = self.changes[rev]
+        dateformat = b'%a %b %d %H:%M:%S %Z %Y'
+        date = dateutil.strdate(elt.get(b'local_date'), dateformat)
+        desc = elt.findtext(b'name') + b'\n' + elt.findtext(b'comment', b'')
+        # etree can return unicode objects for name, comment, and author,
+        # so recode() is used to ensure str objects are emitted.
+        newdateformat = b'%Y-%m-%d %H:%M:%S %1%2'
+        return common.commit(
+            author=self.recode(elt.get(b'author')),
+            date=dateutil.datestr(date, newdateformat),
+            desc=self.recode(desc).strip(),
+            parents=self.parents[rev],
+        )
+###END###
+def pull(self, rev):
+        output, status = self.run(
+            b'pull',
+            self.path,
+            all=True,
+            match=b'hash %s' % rev,
+            no_test=True,
+            no_posthook=True,
+            external_merge=b'/bin/false',
+            repodir=self.tmppath,
+        )
+        if status:
+            if output.find(b'We have conflicts in') == -1:
+                self.checkexit(status, output)
+            output, status = self.run(b'revert', all=True, repodir=self.tmppath)
+            self.checkexit(status, output)
+###END###
+def getchanges(self, rev, full):
+        if full:
+            raise error.Abort(_(b"convert from darcs does not support --full"))
+        copies = {}
+        changes = []
+        man = None
+        for elt in self.changes[rev].find(b'summary').getchildren():
+            if elt.tag in (b'add_directory', b'remove_directory'):
+                continue
+            if elt.tag == b'move':
+                if man is None:
+                    man = self.manifest()
+                source, dest = elt.get(b'from'), elt.get(b'to')
+                if source in man:
+                    # File move
+                    changes.append((source, rev))
+                    changes.append((dest, rev))
+                    copies[dest] = source
+                else:
+                    # Directory move, deduce file moves from manifest
+                    source = source + b'/'
+                    for f in man:
+                        if not f.startswith(source):
+                            continue
+                        fdest = dest + b'/' + f[len(source) :]
+                        changes.append((f, rev))
+                        changes.append((fdest, rev))
+                        copies[fdest] = f
+            else:
+                changes.append((elt.text.strip(), rev))
+        self.pull(rev)
+        self.lastrev = rev
+        return sorted(changes), copies, set()
+###END###
+def getfile(self, name, rev):
+        if rev != self.lastrev:
+            raise error.Abort(_(b'internal calling inconsistency'))
+        path = os.path.join(self.tmppath, name)
+        try:
+            data = util.readfile(path)
+            mode = os.lstat(path).st_mode
+        except IOError as inst:
+            if inst.errno == errno.ENOENT:
+                return None, None
+            raise
+        mode = (mode & 0o111) and b'x' or b''
+        return data, mode
+###END###
+def gettags(self):
+        return self.tags
+###END###
+def __init__(self):
+        self.pipeo = self.pipei = self.pipee = None
+        self.subprocess = None
+        self.connected = False
+###END###
+def connect(self, cachecommand):
+        if self.pipeo:
+            raise error.Abort(_(b"cache connection already open"))
+        self.pipei, self.pipeo, self.pipee, self.subprocess = procutil.popen4(
+            cachecommand
+        )
+        self.connected = True
+###END###
+def close(self):
+        def tryclose(pipe):
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+        if self.connected:
+            try:
+                self.pipei.write(b"exit\n")
+            except Exception:
+                pass
+            tryclose(self.pipei)
+            self.pipei = None
+            tryclose(self.pipeo)
+            self.pipeo = None
+            tryclose(self.pipee)
+            self.pipee = None
+            try:
+                # Wait for process to terminate, making sure to avoid deadlock.
+                # See https://docs.python.org/2/library/subprocess.html for
+                # warnings about wait() and deadlocking.
+                self.subprocess.communicate()
+            except Exception:
+                pass
+            self.subprocess = None
+        self.connected = False
+###END###
+def request(self, request, flush=True):
+        if self.connected:
+            try:
+                self.pipei.write(request)
+                if flush:
+                    self.pipei.flush()
+            except IOError:
+                self.close()
+###END###
+def receiveline(self):
+        if not self.connected:
+            return None
+        try:
+            result = self.pipeo.readline()[:-1]
+            if not result:
+                self.close()
+        except IOError:
+            self.close()
+
+        return result
+###END###
+def __init__(self, repo):
+        ui = repo.ui
+        self.repo = repo
+        self.ui = ui
+        self.cacheprocess = ui.config(b"remotefilelog", b"cacheprocess")
+        if self.cacheprocess:
+            self.cacheprocess = util.expandpath(self.cacheprocess)
+
+        # This option causes remotefilelog to pass the full file path to the
+        # cacheprocess instead of a hashed key.
+        self.cacheprocesspasspath = ui.configbool(
+            b"remotefilelog", b"cacheprocess.includepath"
+        )
+
+        self.debugoutput = ui.configbool(b"remotefilelog", b"debug")
+
+        self.remotecache = cacheconnection()
+###END###
+def setstore(self, datastore, historystore, writedata, writehistory):
+        self.datastore = datastore
+        self.historystore = historystore
+        self.writedata = writedata
+        self.writehistory = writehistory
+###END###
+def _connect(self):
+        return self.repo.connectionpool.get(self.repo.fallbackpath)
+###END###
+def request(self, fileids):
+        """Takes a list of filename/node pairs and fetches them from the
+        server. Files are stored in the local cache.
+        A list of nodes that the server couldn't find is returned.
+        If the connection fails, an exception is raised.
+        """
+        if not self.remotecache.connected:
+            self.connect()
+        cache = self.remotecache
+        writedata = self.writedata
+
+        repo = self.repo
+        total = len(fileids)
+        request = b"get\n%d\n" % total
+        idmap = {}
+        reponame = repo.name
+        for file, id in fileids:
+            fullid = getcachekey(reponame, file, id)
+            if self.cacheprocesspasspath:
+                request += file + b'\0'
+            request += fullid + b"\n"
+            idmap[fullid] = file
+
+        cache.request(request)
+
+        progress = self.ui.makeprogress(_(b'downloading'), total=total)
+        progress.update(0)
+
+        missed = []
+        while True:
+            missingid = cache.receiveline()
+            if not missingid:
+                missedset = set(missed)
+                for missingid in idmap:
+                    if not missingid in missedset:
+                        missed.append(missingid)
+                self.ui.warn(
+                    _(
+                        b"warning: cache connection closed early - "
+                        + b"falling back to server\n"
+                    )
+                )
+                break
+            if missingid == b"0":
+                break
+            if missingid.startswith(b"_hits_"):
+                # receive progress reports
+                parts = missingid.split(b"_")
+                progress.increment(int(parts[2]))
+                continue
+
+            missed.append(missingid)
+
+        global fetchmisses
+        fetchmisses += len(missed)
+
+        fromcache = total - len(missed)
+        progress.update(fromcache, total=total)
+        self.ui.log(
+            b"remotefilelog",
+            b"remote cache hit rate is %r of %r\n",
+            fromcache,
+            total,
+            hit=fromcache,
+            total=total,
+        )
+
+        oldumask = os.umask(0o002)
+        try:
+            # receive cache misses from master
+            if missed:
+                # When verbose is true, sshpeer prints 'running ssh...'
+                # to stdout, which can interfere with some command
+                # outputs
+                verbose = self.ui.verbose
+                self.ui.verbose = False
+                try:
+                    with self._connect() as conn:
+                        remote = conn.peer
+                        if remote.capable(
+                            constants.NETWORK_CAP_LEGACY_SSH_GETFILES
+                        ):
+                            if not isinstance(remote, _sshv1peer):
+                                raise error.Abort(
+                                    b'remotefilelog requires ssh servers'
+                                )
+                            step = self.ui.configint(
+                                b'remotefilelog', b'getfilesstep'
+                            )
+                            getfilestype = self.ui.config(
+                                b'remotefilelog', b'getfilestype'
+                            )
+                            if getfilestype == b'threaded':
+                                _getfiles = _getfiles_threaded
+                            else:
+                                _getfiles = _getfiles_optimistic
+                            _getfiles(
+                                remote,
+                                self.receivemissing,
+                                progress.increment,
+                                missed,
+                                idmap,
+                                step,
+                            )
+                        elif remote.capable(b"x_rfl_getfile"):
+                            if remote.capable(b'batch'):
+                                batchdefault = 100
+                            else:
+                                batchdefault = 10
+                            batchsize = self.ui.configint(
+                                b'remotefilelog', b'batchsize', batchdefault
+                            )
+                            self.ui.debug(
+                                b'requesting %d files from '
+                                b'remotefilelog server...\n' % len(missed)
+                            )
+                            _getfilesbatch(
+                                remote,
+                                self.receivemissing,
+                                progress.increment,
+                                missed,
+                                idmap,
+                                batchsize,
+                            )
+                        else:
+                            raise error.Abort(
+                                b"configured remotefilelog server"
+                                b" does not support remotefilelog"
+                            )
+
+                    self.ui.log(
+                        b"remotefilefetchlog",
+                        b"Success\n",
+                        fetched_files=progress.pos - fromcache,
+                        total_to_fetch=total - fromcache,
+                    )
+                except Exception:
+                    self.ui.log(
+                        b"remotefilefetchlog",
+                        b"Fail\n",
+                        fetched_files=progress.pos - fromcache,
+                        total_to_fetch=total - fromcache,
+                    )
+                    raise
+                finally:
+                    self.ui.verbose = verbose
+                # send to memcache
+                request = b"set\n%d\n%s\n" % (len(missed), b"\n".join(missed))
+                cache.request(request)
+
+            progress.complete()
+
+            # mark ourselves as a user of this cache
+            writedata.markrepo(self.repo.path)
+        finally:
+            os.umask(oldumask)
+###END###
+def receivemissing(self, pipe, filename, node):
+        line = pipe.readline()[:-1]
+        if not line:
+            raise error.ResponseError(
+                _(b"error downloading file contents:"),
+                _(b"connection closed early"),
+            )
+        size = int(line)
+        data = pipe.read(size)
+        if len(data) != size:
+            raise error.ResponseError(
+                _(b"error downloading file contents:"),
+                _(b"only received %s of %s bytes") % (len(data), size),
+            )
+
+        self.writedata.addremotefilelognode(
+            filename, bin(node), zlib.decompress(data)
+        )
+###END###
+def connect(self):
+        if self.cacheprocess:
+            cmd = b"%s %s" % (self.cacheprocess, self.writedata._path)
+            self.remotecache.connect(cmd)
+        else:
+            # If no cache process is specified, we fake one that always
+            # returns cache misses.  This enables tests to run easily
+            # and may eventually allow us to be a drop in replacement
+            # for the largefiles extension.
+            class simplecache(object):
+                def __init__(self):
+                    self.missingids = []
+                    self.connected = True
+
+                def close(self):
+                    pass
+
+                def request(self, value, flush=True):
+                    lines = value.split(b"\n")
+                    if lines[0] != b"get":
+                        return
+                    self.missingids = lines[2:-1]
+                    self.missingids.append(b'0')
+
+                def receiveline(self):
+                    if len(self.missingids) > 0:
+                        return self.missingids.pop(0)
+                    return None
+
+            self.remotecache = simplecache()
+###END###
+def close(self):
+        if fetches:
+            msg = (
+                b"%d files fetched over %d fetches - "
+                + b"(%d misses, %0.2f%% hit ratio) over %0.2fs\n"
+            ) % (
+                fetched,
+                fetches,
+                fetchmisses,
+                float(fetched - fetchmisses) / float(fetched) * 100.0,
+                fetchcost,
+            )
+            if self.debugoutput:
+                self.ui.warn(msg)
+            self.ui.log(
+                b"remotefilelog.prefetch",
+                msg.replace(b"%", b"%%"),
+                remotefilelogfetched=fetched,
+                remotefilelogfetches=fetches,
+                remotefilelogfetchmisses=fetchmisses,
+                remotefilelogfetchtime=fetchcost * 1000,
+            )
+
+        if self.remotecache.connected:
+            self.remotecache.close()
+###END###
+def prefetch(
+        self, fileids, force=False, fetchdata=True, fetchhistory=False
+    ):
+        """downloads the given file versions to the cache"""
+        repo = self.repo
+        idstocheck = []
+        for file, id in fileids:
+            # hack
+            # - we don't use .hgtags
+            # - workingctx produces ids with length 42,
+            #   which we skip since they aren't in any cache
+            if (
+                file == b'.hgtags'
+                or len(id) == 42
+                or not repo.shallowmatch(file)
+            ):
+                continue
+
+            idstocheck.append((file, bin(id)))
+
+        datastore = self.datastore
+        historystore = self.historystore
+        if force:
+            datastore = contentstore.unioncontentstore(*repo.shareddatastores)
+            historystore = metadatastore.unionmetadatastore(
+                *repo.sharedhistorystores
+            )
+
+        missingids = set()
+        if fetchdata:
+            missingids.update(datastore.getmissing(idstocheck))
+        if fetchhistory:
+            missingids.update(historystore.getmissing(idstocheck))
+
+        # partition missing nodes into nullid and not-nullid so we can
+        # warn about this filtering potentially shadowing bugs.
+        nullids = len(
+            [None for unused, id in missingids if id == self.repo.nullid]
+        )
+        if nullids:
+            missingids = [
+                (f, id) for f, id in missingids if id != self.repo.nullid
+            ]
+            repo.ui.develwarn(
+                (
+                    b'remotefilelog not fetching %d null revs'
+                    b' - this is likely hiding bugs' % nullids
+                ),
+                config=b'remotefilelog-ext',
+            )
+        if missingids:
+            global fetches, fetched, fetchcost
+            fetches += 1
+
+            # We want to be able to detect excess individual file downloads, so
+            # let's log that information for debugging.
+            if fetches >= 15 and fetches < 18:
+                if fetches == 15:
+                    fetchwarning = self.ui.config(
+                        b'remotefilelog', b'fetchwarning'
+                    )
+                    if fetchwarning:
+                        self.ui.warn(fetchwarning + b'\n')
+                self.logstacktrace()
+            missingids = [(file, hex(id)) for file, id in sorted(missingids)]
+            fetched += len(missingids)
+            start = time.time()
+            missingids = self.request(missingids)
+            if missingids:
+                raise error.Abort(
+                    _(b"unable to download %d files") % len(missingids)
+                )
+            fetchcost += time.time() - start
+            self._lfsprefetch(fileids)
+###END###
+def _lfsprefetch(self, fileids):
+        if not _lfsmod or not util.safehasattr(
+            self.repo.svfs, b'lfslocalblobstore'
+        ):
+            return
+        if not _lfsmod.wrapper.candownload(self.repo):
+            return
+        pointers = []
+        store = self.repo.svfs.lfslocalblobstore
+        for file, id in fileids:
+            node = bin(id)
+            rlog = self.repo.file(file)
+            if rlog.flags(node) & revlog.REVIDX_EXTSTORED:
+                text = rlog.rawdata(node)
+                p = _lfsmod.pointer.deserialize(text)
+                oid = p.oid()
+                if not store.has(oid):
+                    pointers.append(p)
+        if len(pointers) > 0:
+            self.repo.svfs.lfsremoteblobstore.readbatch(pointers, store)
+            assert all(store.has(p.oid()) for p in pointers)
+###END###
+def logstacktrace(self):
+        import traceback
+
+        self.ui.log(
+            b'remotefilelog',
+            b'excess remotefilelog fetching:\n%s\n',
+            b''.join(pycompat.sysbytes(s) for s in traceback.format_stack()),
+        )
+###END###
+def x_rfl_getfile(self, file, node):
+            if not self.capable(b'x_rfl_getfile'):
+                raise error.Abort(
+                    b'configured remotefile server does not support getfile'
+                )
+            f = wireprotov1peer.future()
+            yield {b'file': file, b'node': node}, f
+            code, data = f.value.split(b'\0', 1)
+            if int(code):
+                raise error.LookupError(file, node, data)
+            yield data
+###END###
+def x_rfl_getflogheads(self, path):
+            if not self.capable(b'x_rfl_getflogheads'):
+                raise error.Abort(
+                    b'configured remotefile server does not '
+                    b'support getflogheads'
+                )
+            f = wireprotov1peer.future()
+            yield {b'path': path}, f
+            heads = f.value.split(b'\n') if f.value else []
+            yield heads
+###END###
+def _updatecallstreamopts(self, command, opts):
+            if command != b'getbundle':
+                return
+            if (
+                constants.NETWORK_CAP_LEGACY_SSH_GETFILES
+                not in self.capabilities()
+            ):
+                return
+            if not util.safehasattr(self, '_localrepo'):
+                return
+            if (
+                constants.SHALLOWREPO_REQUIREMENT
+                not in self._localrepo.requirements
+            ):
+                return
+
+            bundlecaps = opts.get(b'bundlecaps')
+            if bundlecaps:
+                bundlecaps = [bundlecaps]
+            else:
+                bundlecaps = []
+
+            # shallow, includepattern, and excludepattern are a hacky way of
+            # carrying over data from the local repo to this getbundle
+            # command. We need to do it this way because bundle1 getbundle
+            # doesn't provide any other place we can hook in to manipulate
+            # getbundle args before it goes across the wire. Once we get rid
+            # of bundle1, we can use bundle2's _pullbundle2extraprepare to
+            # do this more cleanly.
+            bundlecaps.append(constants.BUNDLE2_CAPABLITY)
+            if self._localrepo.includepattern:
+                patterns = b'\0'.join(self._localrepo.includepattern)
+                includecap = b"includepattern=" + patterns
+                bundlecaps.append(includecap)
+            if self._localrepo.excludepattern:
+                patterns = b'\0'.join(self._localrepo.excludepattern)
+                excludecap = b"excludepattern=" + patterns
+                bundlecaps.append(excludecap)
+            opts[b'bundlecaps'] = b','.join(bundlecaps)
+###END###
+def _sendrequest(self, command, args, **opts):
+            self._updatecallstreamopts(command, args)
+            return super(remotefilepeer, self)._sendrequest(
+                command, args, **opts
+            )
+###END###
+def _callstream(self, command, **opts):
+            supertype = super(remotefilepeer, self)
+            if not util.safehasattr(supertype, '_sendrequest'):
+                self._updatecallstreamopts(command, pycompat.byteskwargs(opts))
+            return super(remotefilepeer, self)._callstream(command, **opts)
+###END###
+def __init__(self):
+                    self.missingids = []
+                    self.connected = True
+###END###
+def close(self):
+                    pass
+###END###
+def request(self, value, flush=True):
+                    lines = value.split(b"\n")
+                    if lines[0] != b"get":
+                        return
+                    self.missingids = lines[2:-1]
+                    self.missingids.append(b'0')
+###END###
+def receiveline(self):
+                    if len(self.missingids) > 0:
+                        return self.missingids.pop(0)
+                    return None
+###END###

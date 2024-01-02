@@ -1,0 +1,676 @@
+  public void testSelectWordSkipChar() {
+    doTest("graafm<caret>achine",
+           "<selection>graafmachine</selection>");
+  }
+###END###
+  public void testSelectHexChar() {
+    doTest("graafm\\x<caret>61chine",
+           "graafm\\<selection>x61</selection>chine",
+           "graafm<selection>\\x61</selection>chine",
+           "<selection>graafm\\x61chine</selection>");
+  }
+###END###
+  public void testSelectOctalChar() {
+    doTest("graafm\\01<caret>4chine",
+           "graafm\\<selection>014</selection>chine",
+           "graafm<selection>\\014</selection>chine",
+           "<selection>graafm\\014chine</selection>");
+  }
+###END###
+  public void testSelectUnicodeEscape() {
+    doTest("graafm\\u0<caret>061chine",
+           "graafm\\<selection>u0061</selection>chine",
+           "graafm<selection>\\u0061</selection>chine",
+           "<selection>graafm\\u0061chine</selection>");
+  }
+###END###
+  public void testSelectNamedCharacter() {
+    doTest("graafm\\N{LATIN SMALL<caret> LETTER A}chine",
+           "graafm\\N{LATIN <selection>SMALL</selection> LETTER A}chine",
+           "graafm\\N{<selection>LATIN SMALL LETTER A</selection>}chine",
+           "graafm<selection>\\N{LATIN SMALL LETTER A}</selection>chine",
+           "<selection>graafm\\N{LATIN SMALL LETTER A}chine</selection>");
+  }
+###END###
+  public void doTest(@NotNull final String before, final String... afters) {
+    assert afters != null && afters.length > 0;
+    myFixture.configureByText("test.regexp", before);
+
+    final SelectWordHandler action = new SelectWordHandler(null);
+    final DataContext dataContext = DataManager.getInstance().getDataContext(myFixture.getEditor().getComponent());
+    final Editor editor = myFixture.getEditor();
+    for (String after : afters) {
+      action.execute(editor, editor.getCaretModel().getCurrentCaret(), dataContext);
+      myFixture.checkResult(after);
+    }
+  }
+###END###
+  public void testSimple() {
+    highlightTest("<warning descr=\"2 consecutive spaces in RegExp\">  </warning>");
+  }
+###END###
+  public void testIgnoreQuoted() {
+    highlightTest("\\Q     \\E");
+  }
+###END###
+  public void testIgnoreInClass() {
+    highlightTest("[   ]");
+  }
+###END###
+  public void testIgnoreInClass2() {
+    highlightTest(" [ -x]");
+  }
+###END###
+  public void testReplacement() {
+    quickfixTest("<warning descr=\"5 consecutive spaces in RegExp\">     </warning>", " {5}", "Replace with ' {5}'");
+  }
+###END###
+  public void testReplacement2() {
+    quickfixTest("\\Q     \\E<warning descr=\"3 consecutive spaces in RegExp\">   <caret></warning>", "\\Q     \\E {3}", "Replace with ' {3}'");
+  }
+###END###
+  public void testEscapedWhitespace() {
+    quickfixTest("<warning descr=\"3 consecutive spaces in RegExp\"><caret>\\   </warning>", " {3}", "Replace with ' {3}",
+                 RegExpFileType.forLanguage(EcmaScriptRegexpLanguage.INSTANCE));
+  }
+###END###
+  public void testNoStringIndexOutOfBoundsException() {
+    highlightTest("<error descr=\"Illegal/unsupported escape sequence\">\\</error>");
+  }
+###END###
+  public void testNoStringIndexOutOfBoundsException2() {
+    highlightTest("<error descr=\"Illegal/unsupported escape sequence\">\\c</error>");
+  }
+###END###
+  protected LocalInspectionTool getInspection() {
+    return new RepeatedSpaceInspection();
+  }
+###END###
+  public void testVeryEmpty() {
+    quickfixTest("<warning descr=\"Empty branch in alternation\">|</warning>", "", "Remove empty branch");
+  }
+###END###
+  public void testEmptyLeft() {
+    highlightTest("|right");
+  }
+###END###
+  public void testEmptyRight() {
+    highlightTest("left|");
+  }
+###END###
+  public void testEmptyLeftAndRight() {
+    quickfixTest("|m<warning descr=\"Empty branch in alternation\">|<caret></warning>", "|m", "Remove empty branch");
+  }
+###END###
+  public void testEmptyMiddle() {
+    quickfixTest("a<warning descr=\"Empty branch in alternation\"><caret>|</warning>|b", "a|b", "Remove empty branch");
+  }
+###END###
+  public void testLogbackUnit() {
+    highlightTest("(|kb|mb|gb)s?");
+  }
+###END###
+  protected LocalInspectionTool getInspection() {
+    return new EmptyAlternationBranchInspection();
+  }
+###END###
+  protected String getTestDataPath() {
+    return PathManagerEx.getCommunityHomePath() + "/RegExpSupport/testData";
+  }
+###END###
+  public void testDanglingMetaCharacter1() throws IOException {
+    doCodeTest("{");
+  }
+
+  public void testDanglingMetaCharacter2() throws IOException {
+    doCodeTest("}");
+  }
+###END###
+  public void testDanglingMetaCharacter2() throws IOException {
+    doCodeTest("}
+###END###
+  public void testDanglingMetaCharacter3() throws IOException {
+    doCodeTest("]");
+  }
+###END###
+  public void testEscapedMetaCharacter() throws IOException {
+    //noinspection RegExpRedundantEscape
+    doCodeTest("\\]");
+  }
+###END###
+  public void testExtendedUnicode() throws IOException {
+    doCodeTest("\\u{9}");
+  }
+###END###
+  public FileType getFileType() {
+    return RegExpFileType.INSTANCE;
+  }
+###END###
+  public Collection<RegExpGroup> getGroups() {
+    return PsiTreeUtil.findChildrenOfType(this, RegExpGroup.class);
+  }
+###END###
+  protected SyntaxHighlighter createHighlighter() {
+    return new RegExpHighlighter(null, myParserDefinition);
+  }
+###END###
+  private static void addLookupElement(final CompletionResultSet result, @NonNls final String name, String type, Icon icon) {
+    result.addElement(createLookupElement(name, type, icon));
+  }
+###END###
+  private static LookupElement createLookupElement(String name, String type, Icon icon) {
+    return LookupElementBuilder.create(name).withTypeText(type).withIcon(icon);
+  }
+###END###
+    protected void addCompletions(@NotNull CompletionParameters parameters,
+                                  @NotNull ProcessingContext context,
+                                  @NotNull CompletionResultSet result) {
+
+      for (String[] completion : RegExpLanguageHosts.getInstance().getPosixCharacterClasses(parameters.getPosition())) {
+        result.addElement(
+          LookupElementBuilder.create(completion[0]).withTypeText((completion.length > 1) ? completion[1] : null).withIcon(emptyIcon)
+            .withInsertHandler(new InsertHandler<>() {
+              @Override
+              public void handleInsert(@NotNull InsertionContext context, @NotNull LookupElement item) {
+                context.setAddCompletionChar(false);
+                final Editor editor = context.getEditor();
+                final Document document = editor.getDocument();
+                final int tailOffset = context.getTailOffset();
+                if (document.getTextLength() < tailOffset + 2 ||
+                    !document.getText(new TextRange(tailOffset, tailOffset + 2)).equals(":]")) {
+                  document.insertString(tailOffset, ":]");
+                }
+                editor.getCaretModel().moveCaretRelatively(2, 0, false, false, true);
+              }
+            }));
+      }
+    }
+###END###
+              public void handleInsert(@NotNull InsertionContext context, @NotNull LookupElement item) {
+                context.setAddCompletionChar(false);
+                final Editor editor = context.getEditor();
+                final Document document = editor.getDocument();
+                final int tailOffset = context.getTailOffset();
+                if (document.getTextLength() < tailOffset + 2 ||
+                    !document.getText(new TextRange(tailOffset, tailOffset + 2)).equals(":]")) {
+                  document.insertString(tailOffset, ":]");
+                }
+                editor.getCaretModel().moveCaretRelatively(2, 0, false, false, true);
+              }
+###END###
+    public void addCompletions(@NotNull final CompletionParameters parameters,
+                               @NotNull final ProcessingContext context,
+                               @NotNull final CompletionResultSet result) {
+      for (String[] stringArray : RegExpLanguageHosts.getInstance().getAllKnownProperties(parameters.getPosition())) {
+        addLookupElement(result, "{" + stringArray[0] + "}", stringArray.length > 1 ? stringArray[1]:null, PlatformIcons.PROPERTY_ICON);
+      }
+    }
+###END###
+    public void addCompletions(@NotNull final CompletionParameters parameters,
+                               @NotNull final ProcessingContext context,
+                               @NotNull final CompletionResultSet result)
+    {
+      for (final String[] completion : RegExpLanguageHosts.getInstance().getKnownCharacterClasses(parameters.getPosition())) {
+        addLookupElement(result, completion[0], completion[1], emptyIcon);
+      }
+
+      for (String[] stringArray : RegExpLanguageHosts.getInstance().getAllKnownProperties(parameters.getPosition())) {
+        addLookupElement(result, "p{" + stringArray[0] + "}", stringArray.length > 1? stringArray[1]:null, PlatformIcons.PROPERTY_ICON);
+      }
+    }
+###END###
+    protected void addCompletions(@NotNull CompletionParameters parameters,
+                                  @NotNull ProcessingContext context,
+                                  @NotNull CompletionResultSet result) {
+      UnicodeCharacterNames.iterate(name -> {
+        if (result.getPrefixMatcher().prefixMatches(name)) {
+          final String type = new String(new int[] {UnicodeCharacterNames.getCodePoint(name)}, 0, 1);
+          if (myEmbrace) {
+            result.addElement(createLookupElement("{" + name + "}", type, emptyIcon));
+          }
+          else {
+            result.addElement(TailTypeDecorator.withTail(createLookupElement(name, type, emptyIcon), TailType.createSimpleTailType('}')));
+          }
+        }
+        ProgressManager.checkCanceled();
+      }
+###END###
+    protected void addCompletions(@NotNull CompletionParameters parameters,
+                                  @NotNull ProcessingContext context,
+                                  @NotNull CompletionResultSet result) {
+      RegExpProperty property = ObjectUtils.tryCast(parameters.getPosition().getParent(), RegExpProperty.class);
+      ASTNode propertyNameNode = property != null ? property.getCategoryNode() : null;
+      if (propertyNameNode == null) {
+        return;
+      }
+      for (String[] value : RegExpLanguageHosts.getInstance().getAllPropertyValues(property, propertyNameNode.getText())) {
+        addLookupElement(result, value[0], value.length > 1 ? value[1] : null, null);
+      }
+    }
+###END###
+    protected void addCompletions(@NotNull CompletionParameters parameters,
+                                  @NotNull ProcessingContext context,
+                                  @NotNull CompletionResultSet result) {
+
+      for (String[] completion : RegExpLanguageHosts.getInstance().getPosixCharacterClasses(parameters.getPosition())) {
+        result.addElement(
+          LookupElementBuilder.create(completion[0]).withTypeText((completion.length > 1) ? completion[1] : null).withIcon(emptyIcon)
+            .withInsertHandler(new InsertHandler<>() {
+              @Override
+              public void handleInsert(@NotNull InsertionContext context, @NotNull LookupElement item) {
+                context.setAddCompletionChar(false);
+                final Editor editor = context.getEditor();
+                final Document document = editor.getDocument();
+                final int tailOffset = context.getTailOffset();
+                if (document.getTextLength() < tailOffset + 2 ||
+                    !document.getText(new TextRange(tailOffset, tailOffset + 2)).equals(":]")) {
+                  document.insertString(tailOffset, ":]");
+                }
+                editor.getCaretModel().moveCaretRelatively(2, 0, false, false, true);
+              }
+            }));
+      }
+    }
+###END###
+              public void handleInsert(@NotNull InsertionContext context, @NotNull LookupElement item) {
+                context.setAddCompletionChar(false);
+                final Editor editor = context.getEditor();
+                final Document document = editor.getDocument();
+                final int tailOffset = context.getTailOffset();
+                if (document.getTextLength() < tailOffset + 2 ||
+                    !document.getText(new TextRange(tailOffset, tailOffset + 2)).equals(":]")) {
+                  document.insertString(tailOffset, ":]");
+                }
+                editor.getCaretModel().moveCaretRelatively(2, 0, false, false, true);
+              }
+###END###
+    public void addCompletions(@NotNull final CompletionParameters parameters,
+                               @NotNull final ProcessingContext context,
+                               @NotNull final CompletionResultSet result) {
+      for (String[] stringArray : RegExpLanguageHosts.getInstance().getAllKnownProperties(parameters.getPosition())) {
+        addLookupElement(result, "{" + stringArray[0] + "}", stringArray.length > 1 ? stringArray[1]:null, PlatformIcons.PROPERTY_ICON);
+      }
+    }
+###END###
+    public void addCompletions(@NotNull final CompletionParameters parameters,
+                               @NotNull final ProcessingContext context,
+                               @NotNull final CompletionResultSet result)
+    {
+      for (final String[] completion : RegExpLanguageHosts.getInstance().getKnownCharacterClasses(parameters.getPosition())) {
+        addLookupElement(result, completion[0], completion[1], emptyIcon);
+      }
+
+      for (String[] stringArray : RegExpLanguageHosts.getInstance().getAllKnownProperties(parameters.getPosition())) {
+        addLookupElement(result, "p{" + stringArray[0] + "}", stringArray.length > 1? stringArray[1]:null, PlatformIcons.PROPERTY_ICON);
+      }
+    }
+###END###
+    protected void addCompletions(@NotNull CompletionParameters parameters,
+                                  @NotNull ProcessingContext context,
+                                  @NotNull CompletionResultSet result) {
+      UnicodeCharacterNames.iterate(name -> {
+        if (result.getPrefixMatcher().prefixMatches(name)) {
+          final String type = new String(new int[] {UnicodeCharacterNames.getCodePoint(name)}, 0, 1);
+          if (myEmbrace) {
+            result.addElement(createLookupElement("{" + name + "}", type, emptyIcon));
+          }
+          else {
+            result.addElement(TailTypeDecorator.withTail(createLookupElement(name, type, emptyIcon), TailType.createSimpleTailType('}')));
+          }
+        }
+        ProgressManager.checkCanceled();
+      }
+###END###
+    protected void addCompletions(@NotNull CompletionParameters parameters,
+                                  @NotNull ProcessingContext context,
+                                  @NotNull CompletionResultSet result) {
+      RegExpProperty property = ObjectUtils.tryCast(parameters.getPosition().getParent(), RegExpProperty.class);
+      ASTNode propertyNameNode = property != null ? property.getCategoryNode() : null;
+      if (propertyNameNode == null) {
+        return;
+      }
+      for (String[] value : RegExpLanguageHosts.getInstance().getAllPropertyValues(property, propertyNameNode.getText())) {
+        addLookupElement(result, value[0], value.length > 1 ? value[1] : null, null);
+      }
+    }
+###END###
+  public static void iterate(Consumer<? super String> consumer) {
+    try {
+      final Class<?> aClass = Class.forName("java.lang.CharacterName");
+      final Method initNamePool = ReflectionUtil.getDeclaredMethod(aClass, "initNamePool");
+      if (initNamePool != null) { // jdk 8
+        byte[] namePool = (byte[])initNamePool.invoke(null); // initializes "lookup" field
+        final int[][] lookup2d = ReflectionUtil.getStaticFieldValue(aClass, int[][].class, "lookup");
+        if (lookup2d == null) {
+          return;
+        }
+        for (int[] indexes : lookup2d) {
+          if (indexes != null) {
+            for (int index : indexes) {
+              if (index != 0) {
+                final String name = new String(namePool, index >>> 8, index & 0xff, StandardCharsets.US_ASCII);
+                consumer.accept(name);
+              }
+            }
+          }
+        }
+      }
+      else {
+        final Method instance = ReflectionUtil.getDeclaredMethod(aClass, "getInstance");
+        final Field field1 = ReflectionUtil.getDeclaredField(aClass, "strPool");
+        final Field field2 = ReflectionUtil.getDeclaredField(aClass, "lookup");
+        if (instance != null && field1 != null && field2 != null) { // jdk 9
+          final Object characterName = instance.invoke(null);
+          byte[] namePool = (byte[])field1.get(characterName);
+          final int[] lookup = (int[])field2.get(characterName);
+          for (int index : lookup) {
+            if (index != 0) {
+              final String name = new String(namePool, index >>> 8, index & 0xff, StandardCharsets.US_ASCII);
+              consumer.accept(name);
+            }
+          }
+        }
+      }
+    }
+    catch (ClassNotFoundException | InvocationTargetException | IllegalAccessException e) {
+      throw new RuntimeException(e);
+    }
+  }
+###END###
+  public static int getCodePoint(String name) {
+    if (name == null) {
+      return -1;
+    }
+    final Method method = ReflectionUtil.getMethod(Character.class, "codePointOf", String.class); // jdk 9 method
+    if (method != null) {
+      try {
+        return (int)method.invoke(null, name);
+      }
+      catch (IllegalArgumentException e) {
+        return -1;
+      }
+      catch (InvocationTargetException e) {
+        if (e.getCause() instanceof IllegalArgumentException) {
+          return -1;
+        }
+        throw new RuntimeException(e);
+      }
+      catch (IllegalAccessException e) {
+        throw new RuntimeException(e);
+      }
+    }
+    try {
+      // jdk 8 fallback
+      final Class<?> aClass = Class.forName("java.lang.CharacterName");
+      final Method initNamePool = ReflectionUtil.getDeclaredMethod(aClass, "initNamePool");
+      if (initNamePool == null) {
+        return -1; // give up
+      }
+      byte[] namePool = (byte[])initNamePool.invoke(null);
+      name = StringUtil.toUpperCase(name.trim());
+      byte[] key = name.getBytes(StandardCharsets.ISO_8859_1);
+      final int[][] lookup = ReflectionUtil.getField(aClass, null, int[][].class, "lookup");
+      if (lookup == null) throw new RuntimeException();
+      for (int i = 0; i < lookup.length; i++) {
+        int[] indexes = lookup[i];
+        if (indexes != null) {
+          for (int j = 0; j < indexes.length; j++) {
+            int index = indexes[j];
+            if ((index & 0xFF) == key.length && matches(namePool, index >>> 8, key)) {
+              return i << 8 | j;
+            }
+          }
+        }
+      }
+      return getUnnamedUnicodeCharacterCodePoint(name);
+    }
+    catch (ClassNotFoundException | InvocationTargetException | IllegalAccessException e) {
+      throw new RuntimeException(e);
+    }
+  }
+###END###
+  private static int getUnnamedUnicodeCharacterCodePoint(String name) {
+    int index = name.lastIndexOf(' ');
+    if (index != -1) {
+      try {
+        int c = Integer.parseInt(name.substring(index + 1), 16);
+        if (Character.isValidCodePoint(c) && name.equals(Character.getName(c))) return c;
+      }
+      catch (NumberFormatException ignore) {
+      }
+    }
+    return -1;
+  }
+###END###
+  private static boolean matches(byte[] bytes, int offset, byte[] key) {
+    if (offset < 0 || offset + key.length > bytes.length) {
+      throw new IllegalArgumentException();
+    }
+    for (int i = 0; i < key.length; i++) {
+      if (bytes[i + offset] != key[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+###END###
+    public void visitRegExpElement(RegExpElement element) {
+        element.acceptChildren(this);
+    }
+###END###
+    public void accept(RegExpElementVisitor visitor) {
+        visitor.visitRegExpClosure(this);
+    }
+###END###
+    public RegExpQuantifier getQuantifier() {
+        final ASTNode node = getNode().findChildByType(RegExpElementTypes.QUANTIFIER);
+        assert node != null;
+        return (RegExpQuantifier)node.getPsi();
+    }
+###END###
+    public RegExpAtom getAtom() {
+        final RegExpAtom atom = PsiTreeUtil.getChildOfType(this, RegExpAtom.class);
+        assert atom != null;
+        return atom;
+    }
+###END###
+  public Number getValue() {
+    return RegExpLanguageHosts.getInstance().getQuantifierValue(this);
+  }
+###END###
+  public void accept(RegExpElementVisitor visitor) {
+    visitor.visitRegExpNumber(this);
+  }
+###END###
+    public Language getLanguage() {
+        return RegExpLanguage.INSTANCE;
+    }
+###END###
+  public String toString() {
+        return getClass().getSimpleName() + ": <" + getText() + ">";
+    }
+###END###
+    public void accept(@NotNull PsiElementVisitor visitor) {
+        if (visitor instanceof RegExpElementVisitor) {
+            accept((RegExpElementVisitor)visitor);
+        } else {
+            super.accept(visitor);
+        }
+    }
+###END###
+    public abstract void accept(RegExpElementVisitor visitor);
+
+    @Override
+    public PsiElement replace(@NotNull PsiElement psiElement) throws IncorrectOperationException {
+        final ASTNode node = psiElement.getNode();
+        assert node != null;
+        getNode().getTreeParent().replaceChild(getNode(), node);
+        return psiElement;
+    }
+###END###
+    public PsiElement replace(@NotNull PsiElement psiElement) throws IncorrectOperationException {
+        final ASTNode node = psiElement.getNode();
+        assert node != null;
+        getNode().getTreeParent().replaceChild(getNode(), node);
+        return psiElement;
+    }
+###END###
+    public void delete() throws IncorrectOperationException {
+        getNode().getTreeParent().removeChild(getNode());
+    }
+###END###
+    public final String getUnescapedText() {
+        return InjectedLanguageManager.getInstance(getProject()).getUnescapedText(this);
+    }
+###END###
+  public static boolean isLiteralExpression(@Nullable PsiElement context) {
+    if (context == null) return false;
+    ASTNode astNode = context.getNode();
+    if (astNode == null) {
+      return false;
+    }
+    ASTNode child = null;
+    if (astNode instanceof CompositeElement) { // in some languages token nodes are wrapped within a single-child composite
+      ASTNode[] children = astNode.getChildren(null);
+      if (children.length == 1) {
+        child = children[0];
+      }
+    }
+    final ParserDefinition parserDefinition = LanguageParserDefinitions.INSTANCE.forLanguage(context.getLanguage());
+    final TokenSet literalElements = parserDefinition.getStringLiteralElements();
+    return literalElements.contains(astNode.getElementType()) || child != null && literalElements.contains(child.getElementType());
+  }
+###END###
+    public int getIndex() {
+        return Integer.parseInt(getIndexNumberText());
+    }
+###END###
+    private String getIndexNumberText() {
+        final ASTNode node = getNode().findChildByType(RegExpTT.NUMBER);
+        if (node != null) {
+            return node.getText();
+        }
+        final String s = getUnescapedText();
+        boolean pcreBackReference = s.charAt(1) == 'g';
+        boolean pcreNumberedGroup = s.startsWith("(?");
+        assert s.charAt(0) == '\\' || pcreNumberedGroup;
+        return pcreBackReference ? getPcreBackrefIndexNumberText(s.substring(2)) :
+               pcreNumberedGroup ? getPcreNumberedGroupIndexNumberText(s.substring(2)) :
+               s.substring(1);
+    }
+###END###
+    private static String getPcreNumberedGroupIndexNumberText(String s) {
+      return trimEnd(s, ")");
+    }
+###END###
+    private static String getPcreBackrefIndexNumberText(String s) {
+        return trimEnd(trimStart(s, "{"), "}");
+    }
+###END###
+    public void accept(RegExpElementVisitor visitor) {
+        visitor.visitRegExpBackref(this);
+    }
+###END###
+    public RegExpGroup resolve() {
+        return resolve(getIndex(), getContainingFile());
+    }
+###END###
+    static RegExpGroup resolve(int index, PsiFile file) {
+        if (index < 0) {
+            return resolveRelativeGroup(Math.abs(index), file);
+        }
+
+        return SyntaxTraverser.psiTraverser(file)
+          .filter(RegExpGroup.class)
+          .filter(RegExpGroup::isCapturing)
+          .skip(index - 1)
+          .first();
+    }
+###END###
+    private static RegExpGroup resolveRelativeGroup(int index, PsiFile file) {
+        List<RegExpGroup> groups = SyntaxTraverser.psiTraverser(file)
+          .filter(RegExpGroup.class)
+          .filter(RegExpGroup::isCapturing)
+          .toList();
+        return index <= groups.size() ? groups.get(groups.size() - index) : null;
+    }
+###END###
+    public PsiReference getReference() {
+        return new PsiReference() {
+            @Override
+            @NotNull
+            public PsiElement getElement() {
+                return RegExpBackrefImpl.this;
+            }
+
+            @Override
+            @NotNull
+            public TextRange getRangeInElement() {
+                return TextRange.from(0, getElement().getTextLength());
+            }
+
+            @Override
+            @NotNull
+            public String getCanonicalText() {
+                return getElement().getText();
+            }
+
+            @Override
+            public PsiElement handleElementRename(@NotNull String newElementName) throws IncorrectOperationException {
+                throw new IncorrectOperationException();
+            }
+
+            @Override
+            public PsiElement bindToElement(@NotNull PsiElement element) throws IncorrectOperationException {
+                throw new IncorrectOperationException();
+            }
+
+            @Override
+            public boolean isReferenceTo(@NotNull PsiElement element) {
+                return Comparing.equal(element, resolve());
+            }
+
+            @Override
+            public boolean isSoft() {
+                return false;
+            }
+
+            @Override
+            public PsiElement resolve() {
+                return RegExpBackrefImpl.this.resolve();
+            }
+        };
+    }
+###END###
+            public PsiElement getElement() {
+                return RegExpBackrefImpl.this;
+            }
+###END###
+            public TextRange getRangeInElement() {
+                return TextRange.from(0, getElement().getTextLength());
+            }
+###END###
+            public String getCanonicalText() {
+                return getElement().getText();
+            }
+###END###
+            public PsiElement handleElementRename(@NotNull String newElementName) throws IncorrectOperationException {
+                throw new IncorrectOperationException();
+            }
+###END###
+            public PsiElement bindToElement(@NotNull PsiElement element) throws IncorrectOperationException {
+                throw new IncorrectOperationException();
+            }
+###END###
+            public boolean isReferenceTo(@NotNull PsiElement element) {
+                return Comparing.equal(element, resolve());
+            }
+###END###
+            public boolean isSoft() {
+                return false;
+            }
+###END###
+            public PsiElement resolve() {
+                return RegExpBackrefImpl.this.resolve();
+            }
+###END###
