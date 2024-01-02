@@ -1,6 +1,6 @@
 # CodeLLaMa Fine-tuned
-This repository houses code dedicated to fine-tuning the [Code Llama 2](https://huggingface.co/codellama/CodeLlama-7b-hf) model for the specific task of predicting method names. In essence, when presented with code snippets from programming languages like Python and Java, the model is trained to produce an appropriate method name as its output. This specialized endeavor is referred to as code infilling, wherein the model is conditioned to craft code that aligns  with an existing code's beginning and end sections. To enhance the model's performance, training data was scraped from the official [Intellij community repository](repositoryhttps://github.com/JetBrains/intellij-community).
-The main objective of this repository is to showcase the adaptation of downstream models and the outcomes to validate the feasibility of the task. Potential future improvements, such as saving models, expanding to support additional languages, and refining the code and methodology, could be considered.
+This repository houses code dedicated to fine-tuning the [Code Llama 2](https://huggingface.co/codellama/CodeLlama-7b-hf) model for the specific task of predicting method names. In essence, when presented with code snippets from programming languages like Python and Java, the model is trained to produce an appropriate method name as its output. This specialized endeavor is referred to as code infilling, wherein the model is conditioned to craft code that aligns  with an existing code's beginning and end sections. To enhance the model's performance, training data was scraped from the official [Intellij community repository](repositoryhttps://github.com/JetBrains/intellij-community).  
+The main objective of this repository is to showcase the adaptation of downstream models and the outcomes to validate the feasibility of the task. Potential future improvements, such as saving models, expanding to support additional languages, and refining the code and methodology, could be considered.  
 This module is developed using ```python 3.9``` and ```CUDA Version: 11.7``` and requires GPU access.
 While other combinations might be possible, they haven't been verified through testing.
 
@@ -44,7 +44,7 @@ Here, n_files represents the number of files you wish to process from the specif
 > Prior to rerunning the process, ensure that any files generated within the dataset folder are removed.
 
 ### Usage 2
-Using the dataset created by ```python3 src/dataset_creation.py n_files``` one can fine tune LLaMa code 2 to predict method names with:
+Using the dataset created by ```python3 src/dataset_creation.py n_files``` one can fine tune Code Llama to predict method names with:
 ```
 python3 src/experiments.py lang
 ```
