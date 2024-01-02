@@ -37,7 +37,7 @@ conda create --name <name> python==3.9
 ```
 pip install -r requirements.txt
 ```
-
+---
 
 ## Running
 If you've followed the aforementioned steps, the module should now be installed and prepared for use.
