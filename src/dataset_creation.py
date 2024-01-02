@@ -210,4 +210,4 @@ if __name__ == "__main__":
     parser.add_argument("n_files", type=int, help="Number of files to process for each language")
     args = parser.parse_args()
     n_files = args.n_files
-    extract_methods_from_repository(repository_path, dataset_path,  n_files = 100)
+    extract_methods_from_repository(repository_path, dataset_path,  n_files)

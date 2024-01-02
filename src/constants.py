@@ -1,2 +1,2 @@
-dataset_path = '... dataset path'
-repository_path = '...repository path'
+dataset_path = '...'
+repository_path = '...'

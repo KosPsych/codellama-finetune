@@ -112,7 +112,7 @@ if __name__ == "__main__":
     # Training Params
     train_params = TrainingArguments(
         output_dir ='./ckeckpoints/',
-        num_train_epochs=2,
+        num_train_epochs=1,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=1,
         optim="paged_adamw_32bit",
