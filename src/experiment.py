@@ -100,8 +100,6 @@ if __name__ == "__main__":
     base_model.config.pretraining_tp = 1
     
 
-
-
     # LoRA Config
     peft_parameters = LoraConfig(
         lora_alpha=16,
@@ -133,8 +131,6 @@ if __name__ == "__main__":
         lr_scheduler_type="constant",
         load_best_model_at_end = True
     )
-
-
 
 
     # Trainer
