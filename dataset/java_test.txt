@@ -1,7 +1,7 @@
     private static String getInputDataFileName(String testName) {
         return Character.toUpperCase(testName.charAt(0)) + testName.substring(1) + ".regexp";
     }
-###END### 
+###END###
     private static String getExpectedResultFileName(String testName) {
         return Character.toUpperCase(testName.charAt(0)) + testName.substring(1) + "Expected" + ".regexp";
     }
