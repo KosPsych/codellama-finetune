@@ -161,7 +161,7 @@ def extract_methods_from_repository(repo_path, dataset_path, n_files):
                     sfile = 'train'
 
                 # Save extracted Python methods to a file
-                filename = dataset_path + "python_"+ sfile +".txt"
+                filename = dataset_path + "/python_"+ sfile +".txt"
                     
                    
                 with open(filename, "a") as file:
@@ -181,7 +181,7 @@ def extract_methods_from_repository(repo_path, dataset_path, n_files):
                 else:
                     sfile = 'train'
                 
-                filename = dataset_path+ "java_" + sfile + ".txt"
+                filename = dataset_path+ "/java_" + sfile + ".txt"
 
                 with open(filename, "a") as file:
 

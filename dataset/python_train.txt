@@ -2592,53 +2592,100 @@ def _open(self, vfs, filename=b'namejournal', _newestfirst=True):
                 continue
             yield journalentry.fromstorage(line)
 ###END###
-def __init__(
-        self, command, pattern, linerange, priority, metadata, skipclean
-    ):
-        self._command = command
-        self._pattern = pattern
-        self._linerange = linerange
-        self._priority = priority
-        self._metadata = metadata
-        self._skipclean = skipclean
-###END###
-def affects(self, opts, fixctx, path):
-        """Should this fixer run on the file at the given path and context?"""
-        repo = fixctx.repo()
-        matcher = matchmod.match(
-            repo.root, repo.root, [self._pattern], ctx=fixctx
-        )
-        return matcher(path)
-###END###
-def shouldoutputmetadata(self):
-        """Should the stdout of this fixer start with JSON and a null byte?"""
-        return self._metadata
-###END###
-def command(self, ui, path, ranges):
-        """A shell command to use to invoke this fixer on the given file/lines
+def _bookmarks(self):
+            '''Parse .hg/bookmarks file and return a dictionary
 
-        May return None if there is no appropriate command to run for the given
-        parameters.
-        """
-        expand = cmdutil.rendercommandtemplate
-        parts = [
-            expand(
-                ui,
-                self._command,
-                {b'rootpath': path, b'basename': os.path.basename(path)},
-            )
-        ]
-        if self._linerange:
-            if self._skipclean and not ranges:
-                # No line ranges to fix, so don't run the fixer.
-                return None
-            for first, last in ranges:
-                parts.append(
-                    expand(
-                        ui, self._linerange, {b'first': first, b'last': last}
-                    )
-                )
-        return b' '.join(parts)
+            Bookmarks are stored as {HASH}\\s{NAME}\\n (localtags format) values
+            in the .hg/bookmarks file. They are read returned as a dictionary
+            with name => hash values.
+            '''
+            try:
+                bookmarks = {}
+                for line in self.opener('bookmarks'):
+                    sha, refspec = line.strip().split(' ', 1)
+                    bookmarks[refspec] = super(bookmark_repo, self).lookup(sha)
+            except:
+                pass
+            return bookmarks
+###END###
+def _bookmarkcurrent(self):
+            '''Get the current bookmark
+
+            If we use gittishsh branches we have a current bookmark that
+            we are on. This function returns the name of the bookmark. It
+            is stored in .hg/bookmarks.current
+            '''
+            mark = None
+            if os.path.exists(self.join('bookmarks.current')):
+                file = self.opener('bookmarks.current')
+                # No readline() in posixfile_nt, reading everything is cheap
+                mark = (file.readlines() or [''])[0]
+                if mark == '':
+                    mark = None
+                file.close()
+            return mark
+###END###
+def rollback(self):
+            if os.path.exists(self.join('undo.bookmarks')):
+                util.rename(self.join('undo.bookmarks'), self.join('bookmarks'))
+            return super(bookmark_repo, self).rollback()
+###END###
+def lookup(self, key):
+            if key in self._bookmarks:
+                key = self._bookmarks[key]
+            return super(bookmark_repo, self).lookup(key)
+###END###
+def _bookmarksupdate(self, parents, node):
+            marks = self._bookmarks
+            update = False
+            if ui.configbool('bookmarks', 'track.current'):
+                mark = self._bookmarkcurrent
+                if mark and marks[mark] in parents:
+                    marks[mark] = node
+                    update = True
+            else:
+                for mark, n in marks.items():
+                    if n in parents:
+                        marks[mark] = node
+                        update = True
+            if update:
+                write(self)
+###END###
+def commitctx(self, ctx, error=False):
+            """Add a revision to the repository and
+            move the bookmark"""
+            wlock = self.wlock() # do both commit and bookmark with lock held
+            try:
+                node  = super(bookmark_repo, self).commitctx(ctx, error)
+                if node is None:
+                    return None
+                parents = self.changelog.parents(node)
+                if parents[1] == nullid:
+                    parents = (parents[0],)
+
+                self._bookmarksupdate(parents, node)
+                return node
+            finally:
+                wlock.release()
+###END###
+def addchangegroup(self, source, srctype, url, emptyok=False):
+            parents = self.dirstate.parents()
+
+            result = super(bookmark_repo, self).addchangegroup(
+                source, srctype, url, emptyok)
+            if result > 1:
+                # We have more heads than before
+                return result
+            node = self.changelog.tip()
+
+            self._bookmarksupdate(parents, node)
+            return result
+###END###
+def _findtags(self):
+            """Merge bookmarks with normal tags"""
+            (tags, tagtypes) = super(bookmark_repo, self)._findtags()
+            tags.update(self._bookmarks)
+            return (tags, tagtypes)
 ###END###
 def __init__(self, ui, repo, inc, exc):
         self.ui = ui
@@ -2910,192 +2957,6 @@ def verify(self, data, sig):
             keys.append(key + [fingerprint])
         return keys
 ###END###
-def __init__(self, ui):
-        self.ui = ui
-        self.resetstate()
-###END###
-def resetstate(self):
-        self.topics = []
-        self.topicstates = {}
-        self.starttimes = {}
-        self.startvals = {}
-        self.printed = False
-        self.lastprint = time.time() + float(self.ui.config(
-            'progress', 'delay', default=3))
-        self.lasttopic = None
-        self.indetcount = 0
-        self.refresh = float(self.ui.config(
-            'progress', 'refresh', default=0.1))
-        self.changedelay = max(3 * self.refresh,
-                               float(self.ui.config(
-                                   'progress', 'changedelay', default=1)))
-        self.order = self.ui.configlist(
-            'progress', 'format',
-            default=['topic', 'bar', 'number', 'estimate'])
-###END###
-def show(self, now, topic, pos, item, unit, total):
-        if not shouldprint(self.ui):
-            return
-        termwidth = self.width()
-        self.printed = True
-        head = ''
-        needprogress = False
-        tail = ''
-        for indicator in self.order:
-            add = ''
-            if indicator == 'topic':
-                add = topic
-            elif indicator == 'number':
-                if total:
-                    add = ('% ' + str(len(str(total))) +
-                           's/%s') % (pos, total)
-                else:
-                    add = str(pos)
-            elif indicator.startswith('item') and item:
-                slice = 'end'
-                if '-' in indicator:
-                    wid = int(indicator.split('-')[1])
-                elif '+' in indicator:
-                    slice = 'beginning'
-                    wid = int(indicator.split('+')[1])
-                else:
-                    wid = 20
-                if slice == 'end':
-                    add = item[-wid:]
-                else:
-                    add = item[:wid]
-                add += (wid - len(add)) * ' '
-            elif indicator == 'bar':
-                add = ''
-                needprogress = True
-            elif indicator == 'unit' and unit:
-                add = unit
-            elif indicator == 'estimate':
-                add = self.estimate(topic, pos, total, now)
-            elif indicator == 'speed':
-                add = self.speed(topic, pos, unit, now)
-            if not needprogress:
-                head = spacejoin(head, add)
-            else:
-                tail = spacejoin(tail, add)
-        if needprogress:
-            used = 0
-            if head:
-                used += len(head) + 1
-            if tail:
-                used += len(tail) + 1
-            progwidth = termwidth - used - 3
-            if total and pos <= total:
-                amt = pos * progwidth // total
-                bar = '=' * (amt - 1)
-                if amt > 0:
-                    bar += '>'
-                bar += ' ' * (progwidth - amt)
-            else:
-                progwidth -= 3
-                self.indetcount += 1
-                # mod the count by twice the width so we can make the
-                # cursor bounce between the right and left sides
-                amt = self.indetcount % (2 * progwidth)
-                amt -= progwidth
-                bar = (' ' * int(progwidth - abs(amt)) + '<=>' +
-                       ' ' * int(abs(amt)))
-            prog = ''.join(('[', bar , ']'))
-            out = spacejoin(head, prog, tail)
-        else:
-            out = spacejoin(head, tail)
-        sys.stderr.write('\r' + out[:termwidth])
-        self.lasttopic = topic
-        sys.stderr.flush()
-###END###
-def clear(self):
-        if not shouldprint(self.ui):
-            return
-        sys.stderr.write('\r%s\r' % (' ' * self.width()))
-###END###
-def complete(self):
-        if not shouldprint(self.ui):
-            return
-        if self.ui.configbool('progress', 'clear-complete', default=True):
-            self.clear()
-        else:
-            sys.stderr.write('\n')
-        sys.stderr.flush()
-###END###
-def width(self):
-        tw = self.ui.termwidth()
-        return min(int(self.ui.config('progress', 'width', default=tw)), tw)
-###END###
-def estimate(self, topic, pos, total, now):
-        if total is None:
-            return ''
-        initialpos = self.startvals[topic]
-        target = total - initialpos
-        delta = pos - initialpos
-        if delta > 0:
-            elapsed = now - self.starttimes[topic]
-            if elapsed > float(
-                self.ui.config('progress', 'estimate', default=2)):
-                seconds = (elapsed * (target - delta)) // delta + 1
-                return fmtremaining(seconds)
-        return ''
-###END###
-def speed(self, topic, pos, unit, now):
-        initialpos = self.startvals[topic]
-        delta = pos - initialpos
-        elapsed = now - self.starttimes[topic]
-        if elapsed > float(
-            self.ui.config('progress', 'estimate', default=2)):
-            return _('%d %s/sec') % (delta / elapsed, unit)
-        return ''
-###END###
-def progress(self, topic, pos, item='', unit='', total=None):
-        now = time.time()
-        if pos is None:
-            self.starttimes.pop(topic, None)
-            self.startvals.pop(topic, None)
-            self.topicstates.pop(topic, None)
-            # reset the progress bar if this is the outermost topic
-            if self.topics and self.topics[0] == topic and self.printed:
-                self.complete()
-                self.resetstate()
-            # truncate the list of topics assuming all topics within
-            # this one are also closed
-            if topic in self.topics:
-                self.topics = self.topics[:self.topics.index(topic)]
-        else:
-            if topic not in self.topics:
-                self.starttimes[topic] = now
-                self.startvals[topic] = pos
-                self.topics.append(topic)
-            self.topicstates[topic] = pos, item, unit, total
-            if now - self.lastprint >= self.refresh and self.topics:
-                if (self.lasttopic is None # first time we printed
-                    # not a topic change
-                    or topic == self.lasttopic
-                    # it's been long enough we should print anyway
-                    or now - self.lastprint >= self.changedelay):
-                    self.lastprint = now
-                    self.show(now, topic, *self.topicstates[topic])
-###END###
-def _quiet(self):
-            return self.debugflag or self.quiet
-###END###
-def progress(self, *args, **opts):
-            if not self._quiet():
-                self._progbar.progress(*args, **opts)
-            return super(progressui, self).progress(*args, **opts)
-###END###
-def write(self, *args, **opts):
-            if not self._quiet() and self._progbar.printed:
-                self._progbar.clear()
-            return super(progressui, self).write(*args, **opts)
-###END###
-def write_err(self, *args, **opts):
-            if not self._quiet() and self._progbar.printed:
-                self._progbar.clear()
-            return super(progressui, self).write_err(*args, **opts)
-###END###
 def __init__(self, ui, repo):
         self._repo = repo
         self._trackedevents = set(ui.configlist(b'blackbox', b'track'))
@@ -3159,65 +3020,52 @@ def _log(self, ui, event, msg, opts):
             return
         _lastlogger.logger = self
 ###END###
-def __init__(self, url, scheme, templater):
-        self.scheme = scheme
-        self.templater = templater
-        self.url = url
-        try:
-            self.parts = max(map(int, _partre.findall(self.url)))
-        except ValueError:
-            self.parts = 0
+def __init__(self, name):
+        self.name = name
+        self.args = []
+        self.opts = {}
 ###END###
-def __repr__(self):
-        return b'<ShortRepository: %s>' % self.scheme
+def __bytes__(self):
+        cmd = b"hg " + self.name
+        if self.opts:
+            for k, values in sorted(pycompat.iteritems(self.opts)):
+                for v in values:
+                    if v:
+                        if isinstance(v, int):
+                            fmt = b' %s %d'
+                        else:
+                            fmt = b' %s %s'
+
+                        cmd += fmt % (k, v)
+                    else:
+                        cmd += b" %s" % (k,)
+        if self.args:
+            cmd += b" "
+            cmd += b" ".join(self.args)
+        return cmd
 ###END###
-def instance(self, ui, url, create, intents=None, createopts=None):
-        url = self.resolve(url)
-        return hg._peerlookup(url).instance(
-            ui, url, create, intents=intents, createopts=createopts
-        )
+def append(self, value):
+        self.args.append(value)
 ###END###
-def resolve(self, url):
-        # Should this use the urlutil.url class, or is manual parsing better?
-        try:
-            url = url.split(b'://', 1)[1]
-        except IndexError:
-            raise error.Abort(_(b"no '://' in scheme url '%s'") % url)
-        parts = url.split(b'/', self.parts)
-        if len(parts) > self.parts:
-            tail = parts[-1]
-            parts = parts[:-1]
-        else:
-            tail = b''
-        context = {b'%d' % (i + 1): v for i, v in enumerate(parts)}
-        return b''.join(self.templater.process(self.url, context)) + tail
+def extend(self, values):
+        self.args.extend(values)
 ###END###
-def __init__(self, ui):
-        self._scripts = dict(ui.configitems(b'logtoprocess'))
+def __setitem__(self, key, value):
+        values = self.opts.setdefault(key, [])
+        values.append(value)
 ###END###
-def tracked(self, event):
-        return bool(self._scripts.get(event))
+def __and__(self, other):
+        return AndCommand(self, other)
 ###END###
-def log(self, ui, event, msg, opts):
-        script = self._scripts[event]
-        maxmsg = 100000
-        if len(msg) > maxmsg:
-            # Each env var has a 128KiB limit on linux. msg can be long, in
-            # particular for command event, where it's the full command line.
-            # Prefer truncating the message than raising "Argument list too
-            # long" error.
-            msg = msg[:maxmsg] + b' (truncated)'
-        env = {
-            b'EVENT': event,
-            b'HGPID': os.getpid(),
-            b'MSG1': msg,
-        }
-        # keyword arguments get prefixed with OPT_ and uppercased
-        env.update(
-            (b'OPT_%s' % key.upper(), value) for key, value in opts.items()
-        )
-        fullenv = procutil.shellenviron(env)
-        procutil.runbgcommand(script, fullenv, shell=True)
+def __init__(self, left, right):
+        self.left = left
+        self.right = right
+###END###
+def __str__(self):
+        return b"%s && %s" % (self.left, self.right)
+###END###
+def __and__(self, other):
+        return AndCommand(self, other)
 ###END###
 def __init__(self, repo):
         self.repo = repo
@@ -3750,812 +3598,25 @@ def checkconflicts(self, other):
             self.conflicts.remove(other)
         return self.conflicts
 ###END###
-def __init__(self, lnode, rnode):
-        self.lnode = lnode
-        self.rnode = rnode
-###END###
-def __init__(self, path=None, transplantfile=None, opener=None):
-        self.path = path
-        self.transplantfile = transplantfile
-        self.opener = opener
+def _extrasetup(self, name, func, fmtopic=None, csettopic=None):
+        """Called with decorator arguments to register a show view.
 
-        if not opener:
-            self.opener = vfsmod.vfs(self.path)
-        self.transplants = {}
-        self.dirty = False
-        self.read()
-###END###
-def read(self):
-        abspath = os.path.join(self.path, self.transplantfile)
-        if self.transplantfile and os.path.exists(abspath):
-            for line in self.opener.read(self.transplantfile).splitlines():
-                lnode, rnode = map(bin, line.split(b':'))
-                list = self.transplants.setdefault(rnode, [])
-                list.append(transplantentry(lnode, rnode))
-###END###
-def write(self):
-        if self.dirty and self.transplantfile:
-            if not os.path.isdir(self.path):
-                os.mkdir(self.path)
-            fp = self.opener(self.transplantfile, b'w')
-            for list in pycompat.itervalues(self.transplants):
-                for t in list:
-                    l, r = map(hex, (t.lnode, t.rnode))
-                    fp.write(l + b':' + r + b'\n')
-            fp.close()
-        self.dirty = False
-###END###
-def get(self, rnode):
-        return self.transplants.get(rnode) or []
-###END###
-def set(self, lnode, rnode):
-        list = self.transplants.setdefault(rnode, [])
-        list.append(transplantentry(lnode, rnode))
-        self.dirty = True
-###END###
-def remove(self, transplant):
-        list = self.transplants.get(transplant.rnode)
-        if list:
-            del list[list.index(transplant)]
-            self.dirty = True
-###END###
-def __init__(self, ui, repo, opts):
-        self.ui = ui
-        self.repo = repo
-        self.path = repo.vfs.join(b'transplant')
-        self.opener = vfsmod.vfs(self.path)
-        self.transplants = transplants(
-            self.path, b'transplants', opener=self.opener
-        )
+        ``name`` is the sub-command name.
 
-        def getcommiteditor():
-            editform = cmdutil.mergeeditform(repo[None], b'transplant')
-            return cmdutil.getcommiteditor(
-                editform=editform, **pycompat.strkwargs(opts)
-            )
+        ``func`` is the function being decorated.
 
-        self.getcommiteditor = getcommiteditor
-###END###
-def applied(self, repo, node, parent):
-        """returns True if a node is already an ancestor of parent
-        or is parent or has already been transplanted"""
-        if hasnode(repo, parent):
-            parentrev = repo.changelog.rev(parent)
-        if hasnode(repo, node):
-            rev = repo.changelog.rev(node)
-            reachable = repo.changelog.ancestors(
-                [parentrev], rev, inclusive=True
-            )
-            if rev in reachable:
-                return True
-        for t in self.transplants.get(node):
-            # it might have been stripped
-            if not hasnode(repo, t.lnode):
-                self.transplants.remove(t)
-                return False
-            lnoderev = repo.changelog.rev(t.lnode)
-            if lnoderev in repo.changelog.ancestors(
-                [parentrev], lnoderev, inclusive=True
-            ):
-                return True
-        return False
-###END###
-def apply(self, repo, source, revmap, merges, opts=None):
-        '''apply the revisions in revmap one by one in revision order'''
-        if opts is None:
-            opts = {}
-        revs = sorted(revmap)
-        p1 = repo.dirstate.p1()
-        pulls = []
-        diffopts = patch.difffeatureopts(self.ui, opts)
-        diffopts.git = True
+        ``fmtopic`` is the topic in the style that will be rendered for
+        this view.
 
-        lock = tr = None
-        try:
-            lock = repo.lock()
-            tr = repo.transaction(b'transplant')
-            for rev in revs:
-                node = revmap[rev]
-                revstr = b'%d:%s' % (rev, short(node))
+        ``csettopic`` is the topic in the style to be used for a changeset
+        printer.
 
-                if self.applied(repo, node, p1):
-                    self.ui.warn(
-                        _(b'skipping already applied revision %s\n') % revstr
-                    )
-                    continue
-
-                parents = source.changelog.parents(node)
-                if not (opts.get(b'filter') or opts.get(b'log')):
-                    # If the changeset parent is the same as the
-                    # wdir's parent, just pull it.
-                    if parents[0] == p1:
-                        pulls.append(node)
-                        p1 = node
-                        continue
-                    if pulls:
-                        if source != repo:
-                            exchange.pull(repo, source.peer(), heads=pulls)
-                        merge.update(repo[pulls[-1]])
-                        p1 = repo.dirstate.p1()
-                        pulls = []
-
-                domerge = False
-                if node in merges:
-                    # pulling all the merge revs at once would mean we
-                    # couldn't transplant after the latest even if
-                    # transplants before them fail.
-                    domerge = True
-                    if not hasnode(repo, node):
-                        exchange.pull(repo, source.peer(), heads=[node])
-
-                skipmerge = False
-                if parents[1] != repo.nullid:
-                    if not opts.get(b'parent'):
-                        self.ui.note(
-                            _(b'skipping merge changeset %d:%s\n')
-                            % (rev, short(node))
-                        )
-                        skipmerge = True
-                    else:
-                        parent = source.lookup(opts[b'parent'])
-                        if parent not in parents:
-                            raise error.Abort(
-                                _(b'%s is not a parent of %s')
-                                % (short(parent), short(node))
-                            )
-                else:
-                    parent = parents[0]
-
-                if skipmerge:
-                    patchfile = None
-                else:
-                    fd, patchfile = pycompat.mkstemp(prefix=b'hg-transplant-')
-                    fp = os.fdopen(fd, 'wb')
-                    gen = patch.diff(source, parent, node, opts=diffopts)
-                    for chunk in gen:
-                        fp.write(chunk)
-                    fp.close()
-
-                del revmap[rev]
-                if patchfile or domerge:
-                    try:
-                        try:
-                            n = self.applyone(
-                                repo,
-                                node,
-                                source.changelog.read(node),
-                                patchfile,
-                                merge=domerge,
-                                log=opts.get(b'log'),
-                                filter=opts.get(b'filter'),
-                            )
-                        except TransplantError:
-                            # Do not rollback, it is up to the user to
-                            # fix the merge or cancel everything
-                            tr.close()
-                            raise
-                        if n and domerge:
-                            self.ui.status(
-                                _(b'%s merged at %s\n') % (revstr, short(n))
-                            )
-                        elif n:
-                            self.ui.status(
-                                _(b'%s transplanted to %s\n')
-                                % (short(node), short(n))
-                            )
-                    finally:
-                        if patchfile:
-                            os.unlink(patchfile)
-            tr.close()
-            if pulls:
-                exchange.pull(repo, source.peer(), heads=pulls)
-                merge.update(repo[pulls[-1]])
-        finally:
-            self.saveseries(revmap, merges)
-            self.transplants.write()
-            if tr:
-                tr.release()
-            if lock:
-                lock.release()
-###END###
-def filter(self, filter, node, changelog, patchfile):
-        '''arbitrarily rewrite changeset before applying it'''
-
-        self.ui.status(_(b'filtering %s\n') % patchfile)
-        user, date, msg = (changelog[1], changelog[2], changelog[4])
-        fd, headerfile = pycompat.mkstemp(prefix=b'hg-transplant-')
-        fp = os.fdopen(fd, 'wb')
-        fp.write(b"# HG changeset patch\n")
-        fp.write(b"# User %s\n" % user)
-        fp.write(b"# Date %d %d\n" % date)
-        fp.write(msg + b'\n')
-        fp.close()
-
-        try:
-            self.ui.system(
-                b'%s %s %s'
-                % (
-                    filter,
-                    procutil.shellquote(headerfile),
-                    procutil.shellquote(patchfile),
-                ),
-                environ={
-                    b'HGUSER': changelog[1],
-                    b'HGREVISION': hex(node),
-                },
-                onerr=error.Abort,
-                errprefix=_(b'filter failed'),
-                blockedtag=b'transplant_filter',
-            )
-            user, date, msg = self.parselog(open(headerfile, b'rb'))[1:4]
-        finally:
-            os.unlink(headerfile)
-
-        return (user, date, msg)
-###END###
-def applyone(
-        self, repo, node, cl, patchfile, merge=False, log=False, filter=None
-    ):
-        '''apply the patch in patchfile to the repository as a transplant'''
-        (manifest, user, (time, timezone), files, message) = cl[:5]
-        date = b"%d %d" % (time, timezone)
-        extra = {b'transplant_source': node}
-        if filter:
-            (user, date, message) = self.filter(filter, node, cl, patchfile)
-
-        if log:
-            # we don't translate messages inserted into commits
-            message += b'\n(transplanted from %s)' % hex(node)
-
-        self.ui.status(_(b'applying %s\n') % short(node))
-        self.ui.note(b'%s %s\n%s\n' % (user, date, message))
-
-        if not patchfile and not merge:
-            raise error.Abort(_(b'can only omit patchfile if merging'))
-        if patchfile:
-            try:
-                files = set()
-                patch.patch(self.ui, repo, patchfile, files=files, eolmode=None)
-                files = list(files)
-            except Exception as inst:
-                seriespath = os.path.join(self.path, b'series')
-                if os.path.exists(seriespath):
-                    os.unlink(seriespath)
-                p1 = repo.dirstate.p1()
-                p2 = node
-                self.log(user, date, message, p1, p2, merge=merge)
-                self.ui.write(stringutil.forcebytestr(inst) + b'\n')
-                raise TransplantError(
-                    _(
-                        b'fix up the working directory and run '
-                        b'hg transplant --continue'
-                    )
-                )
-        else:
-            files = None
-        if merge:
-            p1 = repo.dirstate.p1()
-            repo.setparents(p1, node)
-            m = match.always()
-        else:
-            m = match.exact(files)
-
-        n = repo.commit(
-            message,
-            user,
-            date,
-            extra=extra,
-            match=m,
-            editor=self.getcommiteditor(),
-        )
-        if not n:
-            self.ui.warn(_(b'skipping emptied changeset %s\n') % short(node))
-            return None
-        if not merge:
-            self.transplants.set(n, node)
-
-        return n
-###END###
-def canresume(self):
-        return os.path.exists(os.path.join(self.path, b'journal'))
-###END###
-def resume(self, repo, source, opts):
-        '''recover last transaction and apply remaining changesets'''
-        if os.path.exists(os.path.join(self.path, b'journal')):
-            n, node = self.recover(repo, source, opts)
-            if n:
-                self.ui.status(
-                    _(b'%s transplanted as %s\n') % (short(node), short(n))
-                )
-            else:
-                self.ui.status(
-                    _(b'%s skipped due to empty diff\n') % (short(node),)
-                )
-        seriespath = os.path.join(self.path, b'series')
-        if not os.path.exists(seriespath):
-            self.transplants.write()
-            return
-        nodes, merges = self.readseries()
-        revmap = {}
-        for n in nodes:
-            revmap[source.changelog.rev(n)] = n
-        os.unlink(seriespath)
-
-        self.apply(repo, source, revmap, merges, opts)
-###END###
-def recover(self, repo, source, opts):
-        '''commit working directory using journal metadata'''
-        node, user, date, message, parents = self.readlog()
-        merge = False
-
-        if not user or not date or not message or not parents[0]:
-            raise error.Abort(_(b'transplant log file is corrupt'))
-
-        parent = parents[0]
-        if len(parents) > 1:
-            if opts.get(b'parent'):
-                parent = source.lookup(opts[b'parent'])
-                if parent not in parents:
-                    raise error.Abort(
-                        _(b'%s is not a parent of %s')
-                        % (short(parent), short(node))
-                    )
-            else:
-                merge = True
-
-        extra = {b'transplant_source': node}
-        try:
-            p1 = repo.dirstate.p1()
-            if p1 != parent:
-                raise error.Abort(
-                    _(b'working directory not at transplant parent %s')
-                    % hex(parent)
-                )
-            if merge:
-                repo.setparents(p1, parents[1])
-            st = repo.status()
-            modified, added, removed, deleted = (
-                st.modified,
-                st.added,
-                st.removed,
-                st.deleted,
-            )
-            if merge or modified or added or removed or deleted:
-                n = repo.commit(
-                    message,
-                    user,
-                    date,
-                    extra=extra,
-                    editor=self.getcommiteditor(),
-                )
-                if not n:
-                    raise error.Abort(_(b'commit failed'))
-                if not merge:
-                    self.transplants.set(n, node)
-            else:
-                n = None
-            self.unlog()
-
-            return n, node
-        finally:
-            # TODO: get rid of this meaningless try/finally enclosing.
-            # this is kept only to reduce changes in a patch.
-            pass
-###END###
-def stop(self, ui, repo):
-        """logic to stop an interrupted transplant"""
-        if self.canresume():
-            startctx = repo[b'.']
-            merge.clean_update(startctx)
-            ui.status(_(b"stopped the interrupted transplant\n"))
-            ui.status(
-                _(b"working directory is now at %s\n") % startctx.hex()[:12]
-            )
-            self.unlog()
-            return 0
-###END###
-def readseries(self):
-        nodes = []
-        merges = []
-        cur = nodes
-        for line in self.opener.read(b'series').splitlines():
-            if line.startswith(b'# Merges'):
-                cur = merges
-                continue
-            cur.append(bin(line))
-
-        return (nodes, merges)
-###END###
-def saveseries(self, revmap, merges):
-        if not revmap:
-            return
-
-        if not os.path.isdir(self.path):
-            os.mkdir(self.path)
-        series = self.opener(b'series', b'w')
-        for rev in sorted(revmap):
-            series.write(hex(revmap[rev]) + b'\n')
-        if merges:
-            series.write(b'# Merges\n')
-            for m in merges:
-                series.write(hex(m) + b'\n')
-        series.close()
-###END###
-def parselog(self, fp):
-        parents = []
-        message = []
-        node = self.repo.nullid
-        inmsg = False
-        user = None
-        date = None
-        for line in fp.read().splitlines():
-            if inmsg:
-                message.append(line)
-            elif line.startswith(b'# User '):
-                user = line[7:]
-            elif line.startswith(b'# Date '):
-                date = line[7:]
-            elif line.startswith(b'# Node ID '):
-                node = bin(line[10:])
-            elif line.startswith(b'# Parent '):
-                parents.append(bin(line[9:]))
-            elif not line.startswith(b'# '):
-                inmsg = True
-                message.append(line)
-        if None in (user, date):
-            raise error.Abort(
-                _(b"filter corrupted changeset (no user or date)")
-            )
-        return (node, user, date, b'\n'.join(message), parents)
-###END###
-def log(self, user, date, message, p1, p2, merge=False):
-        '''journal changelog metadata for later recover'''
-
-        if not os.path.isdir(self.path):
-            os.mkdir(self.path)
-        fp = self.opener(b'journal', b'w')
-        fp.write(b'# User %s\n' % user)
-        fp.write(b'# Date %s\n' % date)
-        fp.write(b'# Node ID %s\n' % hex(p2))
-        fp.write(b'# Parent ' + hex(p1) + b'\n')
-        if merge:
-            fp.write(b'# Parent ' + hex(p2) + b'\n')
-        fp.write(message.rstrip() + b'\n')
-        fp.close()
-###END###
-def readlog(self):
-        return self.parselog(self.opener(b'journal'))
-###END###
-def unlog(self):
-        '''remove changelog journal'''
-        absdst = os.path.join(self.path, b'journal')
-        if os.path.exists(absdst):
-            os.unlink(absdst)
-###END###
-def transplantfilter(self, repo, source, root):
-        def matchfn(node):
-            if self.applied(repo, node, root):
-                return False
-            if source.changelog.parents(node)[1] != repo.nullid:
-                return False
-            extra = source.changelog.read(node)[5]
-            cnode = extra.get(b'transplant_source')
-            if cnode and self.applied(repo, cnode, root):
-                return False
-            return True
-
-        return matchfn
-###END###
-def __init__(self, ui, root, data):
-        self._decode = {
-            b'LF': b'to-lf',
-            b'CRLF': b'to-crlf',
-            b'BIN': b'is-binary',
-        }
-        self._encode = {
-            b'LF': b'to-lf',
-            b'CRLF': b'to-crlf',
-            b'BIN': b'is-binary',
-        }
-
-        self.cfg = config.config()
-        # Our files should not be touched. The pattern must be
-        # inserted first override a '** = native' pattern.
-        self.cfg.set(b'patterns', b'.hg*', b'BIN', b'eol')
-        # We can then parse the user's patterns.
-        self.cfg.parse(b'.hgeol', data)
-
-        isrepolf = self.cfg.get(b'repository', b'native') != b'CRLF'
-        self._encode[b'NATIVE'] = isrepolf and b'to-lf' or b'to-crlf'
-        iswdlf = ui.config(b'eol', b'native') in (b'LF', b'\n')
-        self._decode[b'NATIVE'] = iswdlf and b'to-lf' or b'to-crlf'
-
-        include = []
-        exclude = []
-        self.patterns = []
-        for pattern, style in self.cfg.items(b'patterns'):
-            key = style.upper()
-            if key == b'BIN':
-                exclude.append(pattern)
-            else:
-                include.append(pattern)
-            m = match.match(root, b'', [pattern])
-            self.patterns.append((pattern, key, m))
-        # This will match the files for which we need to care
-        # about inconsistent newlines.
-        self.match = match.match(root, b'', [], include, exclude)
-###END###
-def copytoui(self, ui):
-        newpatterns = {pattern for pattern, key, m in self.patterns}
-        for section in (b'decode', b'encode'):
-            for oldpattern, _filter in ui.configitems(section):
-                if oldpattern not in newpatterns:
-                    if ui.configsource(section, oldpattern) == b'eol':
-                        ui.setconfig(section, oldpattern, b'!', b'eol')
-        for pattern, key, m in self.patterns:
-            try:
-                ui.setconfig(b'decode', pattern, self._decode[key], b'eol')
-                ui.setconfig(b'encode', pattern, self._encode[key], b'eol')
-            except KeyError:
-                ui.warn(
-                    _(b"ignoring unknown EOL style '%s' from %s\n")
-                    % (key, self.cfg.source(b'patterns', pattern))
-                )
-        # eol.only-consistent can be specified in ~/.hgrc or .hgeol
-        for k, v in self.cfg.items(b'eol'):
-            ui.setconfig(b'eol', k, v, b'eol')
-###END###
-def checkrev(self, repo, ctx, files):
-        failed = []
-        for f in files or ctx.files():
-            if f not in ctx:
-                continue
-            for pattern, key, m in self.patterns:
-                if not m(f):
-                    continue
-                target = self._encode[key]
-                data = ctx[f].data()
-                if (
-                    target == b"to-lf"
-                    and b"\r\n" in data
-                    or target == b"to-crlf"
-                    and singlelf.search(data)
-                ):
-                    failed.append((f, target, bytes(ctx)))
-                break
-        return failed
-###END###
-def loadeol(self, nodes):
-            eol = parseeol(self.ui, self, nodes)
-            if eol is None:
-                return None
-            eol.copytoui(self.ui)
-            return eol.match
-###END###
-def _hgcleardirstate(self):
-            self._eolmatch = self.loadeol([None])
-            if not self._eolmatch:
-                self._eolmatch = util.never
-                return
-
-            oldeol = None
-            try:
-                cachemtime = os.path.getmtime(self.vfs.join(b"eol.cache"))
-            except OSError:
-                cachemtime = 0
-            else:
-                olddata = self.vfs.read(b"eol.cache")
-                if olddata:
-                    oldeol = eolfile(self.ui, self.root, olddata)
-
-            try:
-                eolmtime = os.path.getmtime(self.wjoin(b".hgeol"))
-            except OSError:
-                eolmtime = 0
-
-            if eolmtime >= cachemtime and eolmtime > 0:
-                self.ui.debug(b"eol: detected change in .hgeol\n")
-
-                hgeoldata = self.wvfs.read(b'.hgeol')
-                neweol = eolfile(self.ui, self.root, hgeoldata)
-
-                wlock = None
-                try:
-                    wlock = self.wlock()
-                    for f in self.dirstate:
-                        if self.dirstate[f] != b'n':
-                            continue
-                        if oldeol is not None:
-                            if not oldeol.match(f) and not neweol.match(f):
-                                continue
-                            oldkey = None
-                            for pattern, key, m in oldeol.patterns:
-                                if m(f):
-                                    oldkey = key
-                                    break
-                            newkey = None
-                            for pattern, key, m in neweol.patterns:
-                                if m(f):
-                                    newkey = key
-                                    break
-                            if oldkey == newkey:
-                                continue
-                        # all normal files need to be looked at again since
-                        # the new .hgeol file specify a different filter
-                        self.dirstate.set_possibly_dirty(f)
-                    # Write the cache to update mtime and cache .hgeol
-                    with self.vfs(b"eol.cache", b"w") as f:
-                        f.write(hgeoldata)
-                except errormod.LockUnavailable:
-                    # If we cannot lock the repository and clear the
-                    # dirstate, then a commit might not see all files
-                    # as modified. But if we cannot lock the
-                    # repository, then we can also not make a commit,
-                    # so ignore the error.
-                    pass
-                finally:
-                    if wlock is not None:
-                        wlock.release()
-###END###
-def commitctx(self, ctx, error=False, origctx=None):
-            for f in sorted(ctx.added() + ctx.modified()):
-                if not self._eolmatch(f):
-                    continue
-                fctx = ctx[f]
-                if fctx is None:
-                    continue
-                data = fctx.data()
-                if stringutil.binary(data):
-                    # We should not abort here, since the user should
-                    # be able to say "** = native" to automatically
-                    # have all non-binary files taken care of.
-                    continue
-                if inconsistenteol(data):
-                    raise errormod.Abort(
-                        _(b"inconsistent newline style in %s\n") % f
-                    )
-            return super(eolrepo, self).commitctx(ctx, error, origctx)
-###END###
-def __init__(self, kind, repo):
-        self.cache = {}
-        self.potentialentries = {}
-        self._kind = kind  # bookmarks or branches
-        self._repo = repo
-        self.loaded = False
-###END###
-def _load(self):
-        """Read the remotenames file, store entries matching selected kind"""
-        self.loaded = True
-        repo = self._repo
-        for node, rpath, rname in logexchange.readremotenamefile(
-            repo, self._kind
-        ):
-            name = rpath + b'/' + rname
-            self.potentialentries[name] = (node, rpath, name)
-###END###
-def _resolvedata(self, potentialentry):
-        """Check that the node for potentialentry exists and return it"""
-        if not potentialentry in self.potentialentries:
-            return None
-        node, remote, name = self.potentialentries[potentialentry]
-        repo = self._repo
-        binnode = bin(node)
-        # if the node doesn't exist, skip it
-        try:
-            repo.changelog.rev(binnode)
-        except LookupError:
-            return None
-        # Skip closed branches
-        if self._kind == b'branches' and repo[binnode].closesbranch():
-            return None
-        return [binnode]
-###END###
-def __getitem__(self, key):
-        if not self.loaded:
-            self._load()
-        val = self._fetchandcache(key)
-        if val is not None:
-            return val
-        else:
-            raise KeyError()
-###END###
-def __iter__(self):
-        return iter(self.potentialentries)
-###END###
-def __len__(self):
-        return len(self.potentialentries)
-###END###
-def __setitem__(self):
-        raise NotImplementedError
-###END###
-def __delitem__(self):
-        raise NotImplementedError
-###END###
-def _fetchandcache(self, key):
-        if key in self.cache:
-            return self.cache[key]
-        val = self._resolvedata(key)
-        if val is not None:
-            self.cache[key] = val
-            return val
-        else:
-            return None
-###END###
-def keys(self):
-        """Get a list of bookmark or branch names"""
-        if not self.loaded:
-            self._load()
-        return self.potentialentries.keys()
-###END###
-def iteritems(self):
-        """Iterate over (name, node) tuples"""
-
-        if not self.loaded:
-            self._load()
-
-        for k, vtup in pycompat.iteritems(self.potentialentries):
-            yield (k, [bin(vtup[0])])
-###END###
-def __init__(self, repo, *args):
-        self._repo = repo
-        self.clearnames()
-###END###
-def clearnames(self):
-        """Clear all remote names state"""
-        self.bookmarks = lazyremotenamedict(b"bookmarks", self._repo)
-        self.branches = lazyremotenamedict(b"branches", self._repo)
-        self._invalidatecache()
-###END###
-def _invalidatecache(self):
-        self._nodetobmarks = None
-        self._nodetobranch = None
-        self._hoisttonodes = None
-        self._nodetohoists = None
-###END###
-def bmarktonodes(self):
-        return self.bookmarks
-###END###
-def nodetobmarks(self):
-        if not self._nodetobmarks:
-            bmarktonodes = self.bmarktonodes()
-            self._nodetobmarks = {}
-            for name, node in pycompat.iteritems(bmarktonodes):
-                self._nodetobmarks.setdefault(node[0], []).append(name)
-        return self._nodetobmarks
-###END###
-def branchtonodes(self):
-        return self.branches
-###END###
-def nodetobranch(self):
-        if not self._nodetobranch:
-            branchtonodes = self.branchtonodes()
-            self._nodetobranch = {}
-            for name, nodes in pycompat.iteritems(branchtonodes):
-                for node in nodes:
-                    self._nodetobranch.setdefault(node, []).append(name)
-        return self._nodetobranch
-###END###
-def hoisttonodes(self, hoist):
-        if not self._hoisttonodes:
-            marktonodes = self.bmarktonodes()
-            self._hoisttonodes = {}
-            hoist += b'/'
-            for name, node in pycompat.iteritems(marktonodes):
-                if name.startswith(hoist):
-                    name = name[len(hoist) :]
-                    self._hoisttonodes[name] = node
-        return self._hoisttonodes
-###END###
-def nodetohoists(self, hoist):
-        if not self._nodetohoists:
-            marktonodes = self.bmarktonodes()
-            self._nodetohoists = {}
-            hoist += b'/'
-            for name, node in pycompat.iteritems(marktonodes):
-                if name.startswith(hoist):
-                    name = name[len(hoist) :]
-                    self._nodetohoists.setdefault(node[0], []).append(name)
-        return self._nodetohoists
+        If ``fmtopic`` is specified, the view function will receive a
+        formatter instance. If ``csettopic`` is specified, the view
+        function will receive a changeset printer.
+        """
+        func._fmtopic = fmtopic
+        func._csettopic = csettopic
 ###END###
 def __init__(self, ui, repo, hooktype):
         self.ui = ui
@@ -5501,6 +4562,24 @@ def notify(self, bugs, committer):
 def get_method(self):
                     return b'PUT'
 ###END###
+def __init__(self, path, cmdline, isgui):
+        # We can't pass non-ASCII through docstrings (and path is
+        # in an unknown encoding anyway), but avoid double separators on
+        # Windows
+        docpath = stringutil.escapestr(path).replace(b'\\\\', b'\\')
+        self.__doc__ %= {'path': pycompat.sysstr(stringutil.uirepr(docpath))}
+        self._cmdline = cmdline
+        self._isgui = isgui
+###END###
+def __call__(self, ui, repo, *pats, **opts):
+        opts = pycompat.byteskwargs(opts)
+        options = b' '.join(map(procutil.shellquote, opts[b'option']))
+        if options:
+            options = b' ' + options
+        return dodiff(
+            ui, repo, self._cmdline + options, pats, opts, guitool=self._isgui
+        )
+###END###
 def lookup(self, key):
             try:
                 _super = super(parentrevspecrepo, self)
@@ -5563,847 +4642,6 @@ def lookup(self, key):
                 else:
                     raise
             return cl.node(rev)
-###END###
-def __init__(self, db, path, compression):
-        self.nullid = sha1nodeconstants.nullid
-        self._db = db
-        self._path = path
-
-        self._pathid = None
-
-        # revnum -> node
-        self._revtonode = {}
-        # node -> revnum
-        self._nodetorev = {}
-        # node -> data structure
-        self._revisions = {}
-
-        self._revisioncache = util.lrucachedict(10)
-
-        self._compengine = compression
-
-        if compression == b'zstd':
-            self._cctx = zstd.ZstdCompressor(level=3)
-            self._dctx = zstd.ZstdDecompressor()
-        else:
-            self._cctx = None
-            self._dctx = None
-
-        self._refreshindex()
-###END###
-def _refreshindex(self):
-        self._revtonode = {}
-        self._nodetorev = {}
-        self._revisions = {}
-
-        res = list(
-            self._db.execute(
-                'SELECT id FROM filepath WHERE path=?', (self._path,)
-            )
-        )
-
-        if not res:
-            self._pathid = None
-            return
-
-        self._pathid = res[0][0]
-
-        res = self._db.execute(
-            'SELECT id, revnum, node, p1rev, p2rev, linkrev, flags '
-            'FROM fileindex '
-            'WHERE pathid=? '
-            'ORDER BY revnum ASC',
-            (self._pathid,),
-        )
-
-        for i, row in enumerate(res):
-            rid, rev, node, p1rev, p2rev, linkrev, flags = row
-
-            if i != rev:
-                raise SQLiteStoreError(
-                    _(b'sqlite database has inconsistent revision numbers')
-                )
-
-            if p1rev == nullrev:
-                p1node = sha1nodeconstants.nullid
-            else:
-                p1node = self._revtonode[p1rev]
-
-            if p2rev == nullrev:
-                p2node = sha1nodeconstants.nullid
-            else:
-                p2node = self._revtonode[p2rev]
-
-            entry = revisionentry(
-                rid=rid,
-                rev=rev,
-                node=node,
-                p1rev=p1rev,
-                p2rev=p2rev,
-                p1node=p1node,
-                p2node=p2node,
-                linkrev=linkrev,
-                flags=flags,
-            )
-
-            self._revtonode[rev] = node
-            self._nodetorev[node] = rev
-            self._revisions[node] = entry
-###END###
-def __len__(self):
-        return len(self._revisions)
-###END###
-def __iter__(self):
-        return iter(pycompat.xrange(len(self._revisions)))
-###END###
-def hasnode(self, node):
-        if node == sha1nodeconstants.nullid:
-            return False
-
-        return node in self._nodetorev
-###END###
-def revs(self, start=0, stop=None):
-        return storageutil.iterrevs(
-            len(self._revisions), start=start, stop=stop
-        )
-###END###
-def parents(self, node):
-        if node == sha1nodeconstants.nullid:
-            return sha1nodeconstants.nullid, sha1nodeconstants.nullid
-
-        if node not in self._revisions:
-            raise error.LookupError(node, self._path, _(b'no node'))
-
-        entry = self._revisions[node]
-        return entry.p1node, entry.p2node
-###END###
-def parentrevs(self, rev):
-        if rev == nullrev:
-            return nullrev, nullrev
-
-        if rev not in self._revtonode:
-            raise IndexError(rev)
-
-        entry = self._revisions[self._revtonode[rev]]
-        return entry.p1rev, entry.p2rev
-###END###
-def rev(self, node):
-        if node == sha1nodeconstants.nullid:
-            return nullrev
-
-        if node not in self._nodetorev:
-            raise error.LookupError(node, self._path, _(b'no node'))
-
-        return self._nodetorev[node]
-###END###
-def node(self, rev):
-        if rev == nullrev:
-            return sha1nodeconstants.nullid
-
-        if rev not in self._revtonode:
-            raise IndexError(rev)
-
-        return self._revtonode[rev]
-###END###
-def lookup(self, node):
-        return storageutil.fileidlookup(self, node, self._path)
-###END###
-def linkrev(self, rev):
-        if rev == nullrev:
-            return nullrev
-
-        if rev not in self._revtonode:
-            raise IndexError(rev)
-
-        entry = self._revisions[self._revtonode[rev]]
-        return entry.linkrev
-###END###
-def iscensored(self, rev):
-        if rev == nullrev:
-            return False
-
-        if rev not in self._revtonode:
-            raise IndexError(rev)
-
-        return self._revisions[self._revtonode[rev]].flags & FLAG_CENSORED
-###END###
-def commonancestorsheads(self, node1, node2):
-        rev1 = self.rev(node1)
-        rev2 = self.rev(node2)
-
-        ancestors = ancestor.commonancestorsheads(self.parentrevs, rev1, rev2)
-        return pycompat.maplist(self.node, ancestors)
-###END###
-def descendants(self, revs):
-        # TODO we could implement this using a recursive SQL query, which
-        # might be faster.
-        return dagop.descendantrevs(revs, self.revs, self.parentrevs)
-###END###
-def heads(self, start=None, stop=None):
-        if start is None and stop is None:
-            if not len(self):
-                return [sha1nodeconstants.nullid]
-
-        startrev = self.rev(start) if start is not None else nullrev
-        stoprevs = {self.rev(n) for n in stop or []}
-
-        revs = dagop.headrevssubset(
-            self.revs, self.parentrevs, startrev=startrev, stoprevs=stoprevs
-        )
-
-        return [self.node(rev) for rev in revs]
-###END###
-def children(self, node):
-        rev = self.rev(node)
-
-        res = self._db.execute(
-            'SELECT'
-            '  node '
-            '  FROM filedata '
-            '  WHERE path=? AND (p1rev=? OR p2rev=?) '
-            '  ORDER BY revnum ASC',
-            (self._path, rev, rev),
-        )
-
-        return [row[0] for row in res]
-###END###
-def size(self, rev):
-        if rev == nullrev:
-            return 0
-
-        if rev not in self._revtonode:
-            raise IndexError(rev)
-
-        node = self._revtonode[rev]
-
-        if self.renamed(node):
-            return len(self.read(node))
-
-        return len(self.revision(node))
-###END###
-def revision(self, node, raw=False, _verifyhash=True):
-        if node in (sha1nodeconstants.nullid, nullrev):
-            return b''
-
-        if isinstance(node, int):
-            node = self.node(node)
-
-        if node not in self._nodetorev:
-            raise error.LookupError(node, self._path, _(b'no node'))
-
-        if node in self._revisioncache:
-            return self._revisioncache[node]
-
-        # Because we have a fulltext revision cache, we are able to
-        # short-circuit delta chain traversal and decompression as soon as
-        # we encounter a revision in the cache.
-
-        stoprids = {self._revisions[n].rid: n for n in self._revisioncache}
-
-        if not stoprids:
-            stoprids[-1] = None
-
-        fulltext = resolvedeltachain(
-            self._db,
-            self._pathid,
-            node,
-            self._revisioncache,
-            stoprids,
-            zstddctx=self._dctx,
-        )
-
-        # Don't verify hashes if parent nodes were rewritten, as the hash
-        # wouldn't verify.
-        if self._revisions[node].flags & (FLAG_MISSING_P1 | FLAG_MISSING_P2):
-            _verifyhash = False
-
-        if _verifyhash:
-            self._checkhash(fulltext, node)
-            self._revisioncache[node] = fulltext
-
-        return fulltext
-###END###
-def rawdata(self, *args, **kwargs):
-        return self.revision(*args, **kwargs)
-###END###
-def read(self, node):
-        return storageutil.filtermetadata(self.revision(node))
-###END###
-def renamed(self, node):
-        return storageutil.filerevisioncopied(self, node)
-###END###
-def cmp(self, node, fulltext):
-        return not storageutil.filedataequivalent(self, node, fulltext)
-###END###
-def emitrevisions(
-        self,
-        nodes,
-        nodesorder=None,
-        revisiondata=False,
-        assumehaveparentrevisions=False,
-        deltamode=repository.CG_DELTAMODE_STD,
-        sidedata_helpers=None,
-    ):
-        if nodesorder not in (b'nodes', b'storage', b'linear', None):
-            raise error.ProgrammingError(
-                b'unhandled value for nodesorder: %s' % nodesorder
-            )
-
-        nodes = [n for n in nodes if n != sha1nodeconstants.nullid]
-
-        if not nodes:
-            return
-
-        # TODO perform in a single query.
-        res = self._db.execute(
-            'SELECT revnum, deltaid FROM fileindex '
-            'WHERE pathid=? '
-            '    AND node in (%s)' % (','.join(['?'] * len(nodes))),
-            tuple([self._pathid] + nodes),
-        )
-
-        deltabases = {}
-
-        for rev, deltaid in res:
-            res = self._db.execute(
-                'SELECT revnum from fileindex WHERE pathid=? AND deltaid=?',
-                (self._pathid, deltaid),
-            )
-            deltabases[rev] = res.fetchone()[0]
-
-        # TODO define revdifffn so we can use delta from storage.
-        for delta in storageutil.emitrevisions(
-            self,
-            nodes,
-            nodesorder,
-            sqliterevisiondelta,
-            deltaparentfn=deltabases.__getitem__,
-            revisiondata=revisiondata,
-            assumehaveparentrevisions=assumehaveparentrevisions,
-            deltamode=deltamode,
-            sidedata_helpers=sidedata_helpers,
-        ):
-
-            yield delta
-###END###
-def add(self, filedata, meta, transaction, linkrev, p1, p2):
-        if meta or filedata.startswith(b'\x01\n'):
-            filedata = storageutil.packmeta(meta, filedata)
-
-        rev = self.addrevision(filedata, transaction, linkrev, p1, p2)
-        return self.node(rev)
-###END###
-def addrevision(
-        self,
-        revisiondata,
-        transaction,
-        linkrev,
-        p1,
-        p2,
-        node=None,
-        flags=0,
-        cachedelta=None,
-    ):
-        if flags:
-            raise SQLiteStoreError(_(b'flags not supported on revisions'))
-
-        validatehash = node is not None
-        node = node or storageutil.hashrevisionsha1(revisiondata, p1, p2)
-
-        if validatehash:
-            self._checkhash(revisiondata, node, p1, p2)
-
-        rev = self._nodetorev.get(node)
-        if rev is not None:
-            return rev
-
-        rev = self._addrawrevision(
-            node, revisiondata, transaction, linkrev, p1, p2
-        )
-
-        self._revisioncache[node] = revisiondata
-        return rev
-###END###
-def addgroup(
-        self,
-        deltas,
-        linkmapper,
-        transaction,
-        addrevisioncb=None,
-        duplicaterevisioncb=None,
-        maybemissingparents=False,
-    ):
-        empty = True
-
-        for (
-            node,
-            p1,
-            p2,
-            linknode,
-            deltabase,
-            delta,
-            wireflags,
-            sidedata,
-        ) in deltas:
-            storeflags = 0
-
-            if wireflags & repository.REVISION_FLAG_CENSORED:
-                storeflags |= FLAG_CENSORED
-
-            if wireflags & ~repository.REVISION_FLAG_CENSORED:
-                raise SQLiteStoreError(b'unhandled revision flag')
-
-            if maybemissingparents:
-                if p1 != sha1nodeconstants.nullid and not self.hasnode(p1):
-                    p1 = sha1nodeconstants.nullid
-                    storeflags |= FLAG_MISSING_P1
-
-                if p2 != sha1nodeconstants.nullid and not self.hasnode(p2):
-                    p2 = sha1nodeconstants.nullid
-                    storeflags |= FLAG_MISSING_P2
-
-            baserev = self.rev(deltabase)
-
-            # If base is censored, delta must be full replacement in a single
-            # patch operation.
-            if baserev != nullrev and self.iscensored(baserev):
-                hlen = struct.calcsize(b'>lll')
-                oldlen = len(self.rawdata(deltabase, _verifyhash=False))
-                newlen = len(delta) - hlen
-
-                if delta[:hlen] != mdiff.replacediffheader(oldlen, newlen):
-                    raise error.CensoredBaseError(self._path, deltabase)
-
-            if not (storeflags & FLAG_CENSORED) and storageutil.deltaiscensored(
-                delta, baserev, lambda x: len(self.rawdata(x))
-            ):
-                storeflags |= FLAG_CENSORED
-
-            linkrev = linkmapper(linknode)
-
-            if node in self._revisions:
-                # Possibly reset parents to make them proper.
-                entry = self._revisions[node]
-
-                if (
-                    entry.flags & FLAG_MISSING_P1
-                    and p1 != sha1nodeconstants.nullid
-                ):
-                    entry.p1node = p1
-                    entry.p1rev = self._nodetorev[p1]
-                    entry.flags &= ~FLAG_MISSING_P1
-
-                    self._db.execute(
-                        'UPDATE fileindex SET p1rev=?, flags=? WHERE id=?',
-                        (self._nodetorev[p1], entry.flags, entry.rid),
-                    )
-
-                if (
-                    entry.flags & FLAG_MISSING_P2
-                    and p2 != sha1nodeconstants.nullid
-                ):
-                    entry.p2node = p2
-                    entry.p2rev = self._nodetorev[p2]
-                    entry.flags &= ~FLAG_MISSING_P2
-
-                    self._db.execute(
-                        'UPDATE fileindex SET p2rev=?, flags=? WHERE id=?',
-                        (self._nodetorev[p1], entry.flags, entry.rid),
-                    )
-
-                if duplicaterevisioncb:
-                    duplicaterevisioncb(self, self.rev(node))
-                empty = False
-                continue
-
-            if deltabase == sha1nodeconstants.nullid:
-                text = mdiff.patch(b'', delta)
-                storedelta = None
-            else:
-                text = None
-                storedelta = (deltabase, delta)
-
-            rev = self._addrawrevision(
-                node,
-                text,
-                transaction,
-                linkrev,
-                p1,
-                p2,
-                storedelta=storedelta,
-                flags=storeflags,
-            )
-
-            if addrevisioncb:
-                addrevisioncb(self, rev)
-            empty = False
-
-        return not empty
-###END###
-def censorrevision(self, tr, censornode, tombstone=b''):
-        tombstone = storageutil.packmeta({b'censored': tombstone}, b'')
-
-        # This restriction is cargo culted from revlogs and makes no sense for
-        # SQLite, since columns can be resized at will.
-        if len(tombstone) > len(self.rawdata(censornode)):
-            raise error.Abort(
-                _(b'censor tombstone must be no longer than censored data')
-            )
-
-        # We need to replace the censored revision's data with the tombstone.
-        # But replacing that data will have implications for delta chains that
-        # reference it.
-        #
-        # While "better," more complex strategies are possible, we do something
-        # simple: we find delta chain children of the censored revision and we
-        # replace those incremental deltas with fulltexts of their corresponding
-        # revision. Then we delete the now-unreferenced delta and original
-        # revision and insert a replacement.
-
-        # Find the delta to be censored.
-        censoreddeltaid = self._db.execute(
-            'SELECT deltaid FROM fileindex WHERE id=?',
-            (self._revisions[censornode].rid,),
-        ).fetchone()[0]
-
-        # Find all its delta chain children.
-        # TODO once we support storing deltas for !files, we'll need to look
-        # for those delta chains too.
-        rows = list(
-            self._db.execute(
-                'SELECT id, pathid, node FROM fileindex '
-                'WHERE deltabaseid=? OR deltaid=?',
-                (censoreddeltaid, censoreddeltaid),
-            )
-        )
-
-        for row in rows:
-            rid, pathid, node = row
-
-            fulltext = resolvedeltachain(
-                self._db, pathid, node, {}, {-1: None}, zstddctx=self._dctx
-            )
-
-            deltahash = hashutil.sha1(fulltext).digest()
-
-            if self._compengine == b'zstd':
-                deltablob = self._cctx.compress(fulltext)
-                compression = COMPRESSION_ZSTD
-            elif self._compengine == b'zlib':
-                deltablob = zlib.compress(fulltext)
-                compression = COMPRESSION_ZLIB
-            elif self._compengine == b'none':
-                deltablob = fulltext
-                compression = COMPRESSION_NONE
-            else:
-                raise error.ProgrammingError(
-                    b'unhandled compression engine: %s' % self._compengine
-                )
-
-            if len(deltablob) >= len(fulltext):
-                deltablob = fulltext
-                compression = COMPRESSION_NONE
-
-            deltaid = insertdelta(self._db, compression, deltahash, deltablob)
-
-            self._db.execute(
-                'UPDATE fileindex SET deltaid=?, deltabaseid=NULL '
-                'WHERE id=?',
-                (deltaid, rid),
-            )
-
-        # Now create the tombstone delta and replace the delta on the censored
-        # node.
-        deltahash = hashutil.sha1(tombstone).digest()
-        tombstonedeltaid = insertdelta(
-            self._db, COMPRESSION_NONE, deltahash, tombstone
-        )
-
-        flags = self._revisions[censornode].flags
-        flags |= FLAG_CENSORED
-
-        self._db.execute(
-            'UPDATE fileindex SET flags=?, deltaid=?, deltabaseid=NULL '
-            'WHERE pathid=? AND node=?',
-            (flags, tombstonedeltaid, self._pathid, censornode),
-        )
-
-        self._db.execute('DELETE FROM delta WHERE id=?', (censoreddeltaid,))
-
-        self._refreshindex()
-        self._revisioncache.clear()
-###END###
-def getstrippoint(self, minlink):
-        return storageutil.resolvestripinfo(
-            minlink,
-            len(self) - 1,
-            [self.rev(n) for n in self.heads()],
-            self.linkrev,
-            self.parentrevs,
-        )
-###END###
-def strip(self, minlink, transaction):
-        if not len(self):
-            return
-
-        rev, _ignored = self.getstrippoint(minlink)
-
-        if rev == len(self):
-            return
-
-        for rev in self.revs(rev):
-            self._db.execute(
-                'DELETE FROM fileindex WHERE pathid=? AND node=?',
-                (self._pathid, self.node(rev)),
-            )
-
-        # TODO how should we garbage collect data in delta table?
-
-        self._refreshindex()
-###END###
-def files(self):
-        return []
-###END###
-def sidedata(self, nodeorrev, _df=None):
-        # Not supported for now
-        return {}
-###END###
-def storageinfo(
-        self,
-        exclusivefiles=False,
-        sharedfiles=False,
-        revisionscount=False,
-        trackedsize=False,
-        storedsize=False,
-    ):
-        d = {}
-
-        if exclusivefiles:
-            d[b'exclusivefiles'] = []
-
-        if sharedfiles:
-            # TODO list sqlite file(s) here.
-            d[b'sharedfiles'] = []
-
-        if revisionscount:
-            d[b'revisionscount'] = len(self)
-
-        if trackedsize:
-            d[b'trackedsize'] = sum(
-                len(self.revision(node)) for node in self._nodetorev
-            )
-
-        if storedsize:
-            # TODO implement this?
-            d[b'storedsize'] = None
-
-        return d
-###END###
-def verifyintegrity(self, state):
-        state[b'skipread'] = set()
-
-        for rev in self:
-            node = self.node(rev)
-
-            try:
-                self.revision(node)
-            except Exception as e:
-                yield sqliteproblem(
-                    error=_(b'unpacking %s: %s') % (short(node), e), node=node
-                )
-
-                state[b'skipread'].add(node)
-###END###
-def _checkhash(self, fulltext, node, p1=None, p2=None):
-        if p1 is None and p2 is None:
-            p1, p2 = self.parents(node)
-
-        if node == storageutil.hashrevisionsha1(fulltext, p1, p2):
-            return
-
-        try:
-            del self._revisioncache[node]
-        except KeyError:
-            pass
-
-        if storageutil.iscensoredtext(fulltext):
-            raise error.CensoredNodeError(self._path, node, fulltext)
-
-        raise SQLiteStoreError(_(b'integrity check failed on %s') % self._path)
-###END###
-def _addrawrevision(
-        self,
-        node,
-        revisiondata,
-        transaction,
-        linkrev,
-        p1,
-        p2,
-        storedelta=None,
-        flags=0,
-    ):
-        if self._pathid is None:
-            res = self._db.execute(
-                'INSERT INTO filepath (path) VALUES (?)', (self._path,)
-            )
-            self._pathid = res.lastrowid
-
-        # For simplicity, always store a delta against p1.
-        # TODO we need a lot more logic here to make behavior reasonable.
-
-        if storedelta:
-            deltabase, delta = storedelta
-
-            if isinstance(deltabase, int):
-                deltabase = self.node(deltabase)
-
-        else:
-            assert revisiondata is not None
-            deltabase = p1
-
-            if deltabase == sha1nodeconstants.nullid:
-                delta = revisiondata
-            else:
-                delta = mdiff.textdiff(
-                    self.revision(self.rev(deltabase)), revisiondata
-                )
-
-        # File index stores a pointer to its delta and the parent delta.
-        # The parent delta is stored via a pointer to the fileindex PK.
-        if deltabase == sha1nodeconstants.nullid:
-            baseid = None
-        else:
-            baseid = self._revisions[deltabase].rid
-
-        # Deltas are stored with a hash of their content. This allows
-        # us to de-duplicate. The table is configured to ignore conflicts
-        # and it is faster to just insert and silently noop than to look
-        # first.
-        deltahash = hashutil.sha1(delta).digest()
-
-        if self._compengine == b'zstd':
-            deltablob = self._cctx.compress(delta)
-            compression = COMPRESSION_ZSTD
-        elif self._compengine == b'zlib':
-            deltablob = zlib.compress(delta)
-            compression = COMPRESSION_ZLIB
-        elif self._compengine == b'none':
-            deltablob = delta
-            compression = COMPRESSION_NONE
-        else:
-            raise error.ProgrammingError(
-                b'unhandled compression engine: %s' % self._compengine
-            )
-
-        # Don't store compressed data if it isn't practical.
-        if len(deltablob) >= len(delta):
-            deltablob = delta
-            compression = COMPRESSION_NONE
-
-        deltaid = insertdelta(self._db, compression, deltahash, deltablob)
-
-        rev = len(self)
-
-        if p1 == sha1nodeconstants.nullid:
-            p1rev = nullrev
-        else:
-            p1rev = self._nodetorev[p1]
-
-        if p2 == sha1nodeconstants.nullid:
-            p2rev = nullrev
-        else:
-            p2rev = self._nodetorev[p2]
-
-        rid = self._db.execute(
-            'INSERT INTO fileindex ('
-            '    pathid, revnum, node, p1rev, p2rev, linkrev, flags, '
-            '    deltaid, deltabaseid) '
-            '    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (
-                self._pathid,
-                rev,
-                node,
-                p1rev,
-                p2rev,
-                linkrev,
-                flags,
-                deltaid,
-                baseid,
-            ),
-        ).lastrowid
-
-        entry = revisionentry(
-            rid=rid,
-            rev=rev,
-            node=node,
-            p1rev=p1rev,
-            p2rev=p2rev,
-            p1node=p1,
-            p2node=p2,
-            linkrev=linkrev,
-            flags=flags,
-        )
-
-        self._nodetorev[node] = rev
-        self._revtonode[rev] = node
-        self._revisions[node] = entry
-
-        return rev
-###END###
-def cancopy(self):
-        return False
-###END###
-def transaction(self, *args, **kwargs):
-        current = self.currenttransaction()
-
-        tr = super(sqliterepository, self).transaction(*args, **kwargs)
-
-        if current:
-            return tr
-
-        self._dbconn.execute('BEGIN TRANSACTION')
-
-        def committransaction(_):
-            self._dbconn.commit()
-
-        tr.addfinalize(b'sqlitestore', committransaction)
-
-        return tr
-###END###
-def _dbconn(self):
-        # SQLite connections can only be used on the thread that created
-        # them. In most cases, this "just works." However, hgweb uses
-        # multiple threads.
-        tid = threading.current_thread().ident
-
-        if self._db:
-            if self._db[0] == tid:
-                return self._db[1]
-
-        db = makedb(self.svfs.join(b'db.sqlite'))
-        self._db = (tid, db)
-
-        return db
-###END###
-def file(self, path):
-        if path[0] == b'/':
-            path = path[1:]
-
-        if REQUIREMENT_ZSTD in self.requirements:
-            compression = b'zstd'
-        elif REQUIREMENT_ZLIB in self.requirements:
-            compression = b'zlib'
-        elif REQUIREMENT_NONE in self.requirements:
-            compression = b'none'
-        else:
-            raise error.Abort(
-                _(
-                    b'unable to determine what compression engine '
-                    b'to use for SQLite storage'
-                )
-            )
-
-        return sqlitefilestore(self._dbconn, path, compression)
 ###END###
 def __getitem__(name):
         def nullfunc(*args, **kwds):
@@ -8389,193 +6627,154 @@ def lock(self):
 def revmappath(self):
         return self._repo.vfs.join(self._vfspath + b'.m')
 ###END###
-def __init__(self, path=None):
-        """create or load the revmap, optionally associate to a file
+def __init__(self, ui, repo, opts):
+        self.ui = ui
+        self.opts = opts
 
-        if path is None, the revmap is entirely in-memory. the caller is
-        responsible for locking. concurrent writes to a same file is unsafe.
-        the caller needs to make sure one file is associated to at most one
-        revmap object at a time."""
-        self.path = path
-        self._rev2hsh = [None]
-        self._rev2flag = [None]
-        self._hsh2rev = {}
-        # since rename does not happen frequently, do not store path for every
-        # revision. self._renamerevs can be used for bisecting.
-        self._renamerevs = [0]
-        self._renamepaths = [b'']
-        self._lastmaxrev = -1
-        if path:
-            if os.path.exists(path):
-                self._load()
-            else:
-                # write the header so "append" can do incremental updates
-                self.flush()
+        if ui.quiet:
+            datefunc = dateutil.shortdate
+        else:
+            datefunc = dateutil.datestr
+        datefunc = util.cachefunc(datefunc)
+        getctx = util.cachefunc(lambda x: repo[x[0]])
+        hexfunc = self._hexfunc
+
+        # special handling working copy "changeset" and "rev" functions
+        if self.opts.get(b'rev') == b'wdir()':
+            orig = hexfunc
+            hexfunc = lambda x: None if x is None else orig(x)
+            wnode = hexfunc(repo[b'.'].node()) + b'+'
+            wrev = b'%d' % repo[b'.'].rev()
+            wrevpad = b''
+            if not opts.get(b'changeset'):  # only show + if changeset is hidden
+                wrev += b'+'
+                wrevpad = b' '
+            revenc = lambda x: wrev if x is None else (b'%d' % x) + wrevpad
+
+            def csetenc(x):
+                if x is None:
+                    return wnode
+                return pycompat.bytestr(x) + b' '
+
+        else:
+            revenc = csetenc = pycompat.bytestr
+
+        # opt name, separator, raw value (for json/plain), encoder (for plain)
+        opmap = [
+            (b'user', b' ', lambda x: getctx(x).user(), ui.shortuser),
+            (b'number', b' ', lambda x: getctx(x).rev(), revenc),
+            (b'changeset', b' ', lambda x: hexfunc(x[0]), csetenc),
+            (b'date', b' ', lambda x: getctx(x).date(), datefunc),
+            (b'file', b' ', lambda x: x[2], pycompat.bytestr),
+            (b'line_number', b':', lambda x: x[1] + 1, pycompat.bytestr),
+        ]
+        fieldnamemap = {b'number': b'rev', b'changeset': b'node'}
+        funcmap = [
+            (get, sep, fieldnamemap.get(op, op), enc)
+            for op, sep, get, enc in opmap
+            if opts.get(op)
+        ]
+        # no separator for first column
+        funcmap[0] = list(funcmap[0])
+        funcmap[0][1] = b''
+        self.funcmap = funcmap
 ###END###
-def copyfrom(self, rhs):
-        """copy the map data from another revmap. do not affect self.path"""
-        self._rev2hsh = rhs._rev2hsh[:]
-        self._rev2flag = rhs._rev2flag[:]
-        self._hsh2rev = rhs._hsh2rev.copy()
-        self._renamerevs = rhs._renamerevs[:]
-        self._renamepaths = rhs._renamepaths[:]
-        self._lastmaxrev = -1
-###END###
-def maxrev(self):
-        """return max linelog revision number"""
-        return len(self._rev2hsh) - 1
-###END###
-def append(self, hsh, sidebranch=False, path=None, flush=False):
-        """add a binary hg hash and return the mapped linelog revision.
-        if flush is True, incrementally update the file.
+def write(self, annotatedresult, lines=None, existinglines=None):
+        """(annotateresult, [str], set([rev, linenum])) -> None. write output.
+        annotateresult can be [(node, linenum, path)], or [(node, linenum)]
         """
-        if hsh in self._hsh2rev:
-            raise error.CorruptedFileError(
-                b'%r is in revmap already' % hex(hsh)
-            )
-        if len(hsh) != _hshlen:
-            raise hgerror.ProgrammingError(
-                b'hsh must be %d-char long' % _hshlen
-            )
-        idx = len(self._rev2hsh)
-        flag = 0
-        if sidebranch:
-            flag |= sidebranchflag
-        if path is not None and path != self._renamepaths[-1]:
-            flag |= renameflag
-            self._renamerevs.append(idx)
-            self._renamepaths.append(path)
-        self._rev2hsh.append(hsh)
-        self._rev2flag.append(flag)
-        self._hsh2rev[hsh] = idx
-        if flush:
-            self.flush()
-        return idx
+        pieces = []  # [[str]]
+        maxwidths = []  # [int]
+
+        # calculate padding
+        for f, sep, name, enc in self.funcmap:
+            l = [enc(f(x)) for x in annotatedresult]
+            pieces.append(l)
+            if name in [b'node', b'date']:  # node and date has fixed size
+                l = l[:1]
+            widths = pycompat.maplist(encoding.colwidth, set(l))
+            maxwidth = max(widths) if widths else 0
+            maxwidths.append(maxwidth)
+
+        # buffered output
+        result = b''
+        for i in pycompat.xrange(len(annotatedresult)):
+            for j, p in enumerate(pieces):
+                sep = self.funcmap[j][1]
+                padding = b' ' * (maxwidths[j] - len(p[i]))
+                result += sep + padding + p[i]
+            if lines:
+                if existinglines is None:
+                    result += b': ' + lines[i]
+                else:  # extra formatting showing whether a line exists
+                    key = (annotatedresult[i][0], annotatedresult[i][1])
+                    if key in existinglines:
+                        result += b':  ' + lines[i]
+                    else:
+                        result += b': ' + self.ui.label(
+                            b'-' + lines[i], b'diff.deleted'
+                        )
+
+            if result[-1:] != b'\n':
+                result += b'\n'
+
+        self.ui.write(result)
 ###END###
-def rev2hsh(self, rev):
-        """convert linelog revision to hg hash. return None if not found."""
-        if rev > self.maxrev or rev < 0:
-            return None
-        return self._rev2hsh[rev]
+def _hexfunc(self):
+        if self.ui.debugflag or self.opts.get(b'long_hash'):
+            return hex
+        else:
+            return short
 ###END###
-def rev2flag(self, rev):
-        """get the flag (uint8) for a given linelog revision.
-        return None if revision does not exist.
-        """
-        if rev > self.maxrev or rev < 0:
-            return None
-        return self._rev2flag[rev]
+def end(self):
+        pass
 ###END###
-def rev2path(self, rev):
-        """get the path for a given linelog revision.
-        return None if revision does not exist.
-        """
-        if rev > self.maxrev or rev < 0:
-            return None
-        idx = bisect.bisect_right(self._renamerevs, rev) - 1
-        return self._renamepaths[idx]
+def __init__(self, ui, repo, opts):
+        super(jsonformatter, self).__init__(ui, repo, opts)
+        self.ui.write(b'[')
+        self.needcomma = False
 ###END###
-def hsh2rev(self, hsh):
-        """convert hg hash to linelog revision. return None if not found."""
-        return self._hsh2rev.get(hsh)
+def write(self, annotatedresult, lines=None, existinglines=None):
+        if annotatedresult:
+            self._writecomma()
+
+        pieces = [
+            (name, pycompat.maplist(f, annotatedresult))
+            for f, sep, name, enc in self.funcmap
+        ]
+        if lines is not None:
+            pieces.append((b'line', lines))
+        pieces.sort()
+
+        seps = [b','] * len(pieces[:-1]) + [b'']
+
+        result = b''
+        lasti = len(annotatedresult) - 1
+        for i in pycompat.xrange(len(annotatedresult)):
+            result += b'\n {\n'
+            for j, p in enumerate(pieces):
+                k, vs = p
+                result += b'  "%s": %s%s\n' % (
+                    k,
+                    templatefilters.json(vs[i], paranoid=False),
+                    seps[j],
+                )
+            result += b' }%s' % (b'' if i == lasti else b',')
+        if lasti >= 0:
+            self.needcomma = True
+
+        self.ui.write(result)
 ###END###
-def clear(self, flush=False):
-        """make the map empty. if flush is True, write to disk"""
-        # rev 0 is reserved, real rev starts from 1
-        self._rev2hsh = [None]
-        self._rev2flag = [None]
-        self._hsh2rev = {}
-        self._rev2path = [b'']
-        self._lastmaxrev = -1
-        if flush:
-            self.flush()
+def _writecomma(self):
+        if self.needcomma:
+            self.ui.write(b',')
+            self.needcomma = False
 ###END###
-def flush(self):
-        """write the state down to the file"""
-        if not self.path:
-            return
-        if self._lastmaxrev == -1:  # write the entire file
-            with open(self.path, b'wb') as f:
-                f.write(self.HEADER)
-                for i in pycompat.xrange(1, len(self._rev2hsh)):
-                    self._writerev(i, f)
-        else:  # append incrementally
-            with open(self.path, b'ab') as f:
-                for i in pycompat.xrange(
-                    self._lastmaxrev + 1, len(self._rev2hsh)
-                ):
-                    self._writerev(i, f)
-        self._lastmaxrev = self.maxrev
+def _hexfunc(self):
+        return hex
 ###END###
-def _load(self):
-        """load state from file"""
-        if not self.path:
-            return
-        # use local variables in a loop. CPython uses LOAD_FAST for them,
-        # which is faster than both LOAD_CONST and LOAD_GLOBAL.
-        flaglen = 1
-        hshlen = _hshlen
-        with open(self.path, b'rb') as f:
-            if f.read(len(self.HEADER)) != self.HEADER:
-                raise error.CorruptedFileError()
-            self.clear(flush=False)
-            while True:
-                buf = f.read(flaglen)
-                if not buf:
-                    break
-                flag = ord(buf)
-                rev = len(self._rev2hsh)
-                if flag & renameflag:
-                    path = self._readcstr(f)
-                    self._renamerevs.append(rev)
-                    self._renamepaths.append(path)
-                hsh = f.read(hshlen)
-                if len(hsh) != hshlen:
-                    raise error.CorruptedFileError()
-                self._hsh2rev[hsh] = rev
-                self._rev2flag.append(flag)
-                self._rev2hsh.append(hsh)
-        self._lastmaxrev = self.maxrev
-###END###
-def _writerev(self, rev, f):
-        """append a revision data to file"""
-        flag = self._rev2flag[rev]
-        hsh = self._rev2hsh[rev]
-        f.write(struct.pack(b'B', flag))
-        if flag & renameflag:
-            path = self.rev2path(rev)
-            if path is None:
-                raise error.CorruptedFileError(b'cannot find path for %s' % rev)
-            f.write(path + b'\0')
-        f.write(hsh)
-###END###
-def _readcstr(f):
-        """read a C-language-like '\0'-terminated string"""
-        buf = b''
-        while True:
-            ch = f.read(1)
-            if not ch:  # unexpected eof
-                raise error.CorruptedFileError()
-            if ch == b'\0':
-                break
-            buf += ch
-        return buf
-###END###
-def __contains__(self, f):
-        """(fctx or (node, path)) -> bool.
-        test if (node, path) is in the map, and is not in a side branch.
-        f can be either a tuple of (node, path), or a fctx.
-        """
-        if isinstance(f, tuple):  # f: (node, path)
-            hsh, path = f
-        else:  # f: fctx
-            hsh, path = f.node(), f.path()
-        rev = self.hsh2rev(hsh)
-        if rev is None:
-            return False
-        if path is not None and path != self.rev2path(rev):
-            return False
-        return (self.rev2flag(rev) & sidebranchflag) == 0
+def end(self):
+        self.ui.write(b'\n]\n')
 ###END###
 def getannotate(self, path, lastnode=None):
             if not self.capable(b'getannotate'):
@@ -8888,6 +7087,1687 @@ def _filterghosts(self, ids):
         parentmap = self.sourcerepo.get_parent_map(ids)
         parents = tuple([parent for parent in ids if parent in parentmap])
         return parents
+###END###
+def __init__(self, ui, repotype, path=None, revs=None):
+        common.converter_source.__init__(self, ui, repotype, path, revs)
+        if revs and len(revs) > 1:
+            raise error.Abort(
+                _(
+                    b'monotone source does not support specifying '
+                    b'multiple revs'
+                )
+            )
+        common.commandline.__init__(self, ui, b'mtn')
+
+        self.ui = ui
+        self.path = path
+        self.automatestdio = False
+        self.revs = revs
+
+        norepo = common.NoRepo(
+            _(b"%s does not look like a monotone repository") % path
+        )
+        if not os.path.exists(os.path.join(path, b'_MTN')):
+            # Could be a monotone repository (SQLite db file)
+            try:
+                f = open(path, b'rb')
+                header = f.read(16)
+                f.close()
+            except IOError:
+                header = b''
+            if header != b'SQLite format 3\x00':
+                raise norepo
+
+        # regular expressions for parsing monotone output
+        space = br'\s*'
+        name = br'\s+"((?:\\"|[^"])*)"\s*'
+        value = name
+        revision = br'\s+\[(\w+)\]\s*'
+        lines = br'(?:.|\n)+'
+
+        self.dir_re = re.compile(space + b"dir" + name)
+        self.file_re = re.compile(
+            space + b"file" + name + b"content" + revision
+        )
+        self.add_file_re = re.compile(
+            space + b"add_file" + name + b"content" + revision
+        )
+        self.patch_re = re.compile(
+            space + b"patch" + name + b"from" + revision + b"to" + revision
+        )
+        self.rename_re = re.compile(space + b"rename" + name + b"to" + name)
+        self.delete_re = re.compile(space + b"delete" + name)
+        self.tag_re = re.compile(space + b"tag" + name + b"revision" + revision)
+        self.cert_re = re.compile(
+            lines + space + b"name" + name + b"value" + value
+        )
+
+        attr = space + b"file" + lines + space + b"attr" + space
+        self.attr_execute_re = re.compile(
+            attr + b'"mtn:execute"' + space + b'"true"'
+        )
+
+        # cached data
+        self.manifest_rev = None
+        self.manifest = None
+        self.files = None
+        self.dirs = None
+
+        common.checktool(b'mtn', abort=False)
+###END###
+def mtnrun(self, *args, **kwargs):
+        if self.automatestdio:
+            return self.mtnrunstdio(*args, **kwargs)
+        else:
+            return self.mtnrunsingle(*args, **kwargs)
+###END###
+def mtnrunsingle(self, *args, **kwargs):
+        kwargs['d'] = self.path
+        return self.run0(b'automate', *args, **kwargs)
+###END###
+def mtnrunstdio(self, *args, **kwargs):
+        # Prepare the command in automate stdio format
+        kwargs = pycompat.byteskwargs(kwargs)
+        command = []
+        for k, v in pycompat.iteritems(kwargs):
+            command.append(b"%d:%s" % (len(k), k))
+            if v:
+                command.append(b"%d:%s" % (len(v), v))
+        if command:
+            command.insert(0, b'o')
+            command.append(b'e')
+
+        command.append(b'l')
+        for arg in args:
+            command.append(b"%d:%s" % (len(arg), arg))
+        command.append(b'e')
+        command = b''.join(command)
+
+        self.ui.debug(b"mtn: sending '%s'\n" % command)
+        self.mtnwritefp.write(command)
+        self.mtnwritefp.flush()
+
+        return self.mtnstdioreadcommandoutput(command)
+###END###
+def mtnstdioreadpacket(self):
+        read = None
+        commandnbr = b''
+        while read != b':':
+            read = self.mtnreadfp.read(1)
+            if not read:
+                raise error.Abort(_(b'bad mtn packet - no end of commandnbr'))
+            commandnbr += read
+        commandnbr = commandnbr[:-1]
+
+        stream = self.mtnreadfp.read(1)
+        if stream not in b'mewptl':
+            raise error.Abort(
+                _(b'bad mtn packet - bad stream type %s') % stream
+            )
+
+        read = self.mtnreadfp.read(1)
+        if read != b':':
+            raise error.Abort(_(b'bad mtn packet - no divider before size'))
+
+        read = None
+        lengthstr = b''
+        while read != b':':
+            read = self.mtnreadfp.read(1)
+            if not read:
+                raise error.Abort(_(b'bad mtn packet - no end of packet size'))
+            lengthstr += read
+        try:
+            length = pycompat.long(lengthstr[:-1])
+        except TypeError:
+            raise error.Abort(
+                _(b'bad mtn packet - bad packet size %s') % lengthstr
+            )
+
+        read = self.mtnreadfp.read(length)
+        if len(read) != length:
+            raise error.Abort(
+                _(
+                    b"bad mtn packet - unable to read full packet "
+                    b"read %s of %s"
+                )
+                % (len(read), length)
+            )
+
+        return (commandnbr, stream, length, read)
+###END###
+def mtnstdioreadcommandoutput(self, command):
+        retval = []
+        while True:
+            commandnbr, stream, length, output = self.mtnstdioreadpacket()
+            self.ui.debug(
+                b'mtn: read packet %s:%s:%d\n' % (commandnbr, stream, length)
+            )
+
+            if stream == b'l':
+                # End of command
+                if output != b'0':
+                    raise error.Abort(
+                        _(b"mtn command '%s' returned %s") % (command, output)
+                    )
+                break
+            elif stream in b'ew':
+                # Error, warning output
+                self.ui.warn(_(b'%s error:\n') % self.command)
+                self.ui.warn(output)
+            elif stream == b'p':
+                # Progress messages
+                self.ui.debug(b'mtn: ' + output)
+            elif stream == b'm':
+                # Main stream - command output
+                retval.append(output)
+
+        return b''.join(retval)
+###END###
+def mtnloadmanifest(self, rev):
+        if self.manifest_rev == rev:
+            return
+        self.manifest = self.mtnrun(b"get_manifest_of", rev).split(b"\n\n")
+        self.manifest_rev = rev
+        self.files = {}
+        self.dirs = {}
+
+        for e in self.manifest:
+            m = self.file_re.match(e)
+            if m:
+                attr = b""
+                name = m.group(1)
+                node = m.group(2)
+                if self.attr_execute_re.match(e):
+                    attr += b"x"
+                self.files[name] = (node, attr)
+            m = self.dir_re.match(e)
+            if m:
+                self.dirs[m.group(1)] = True
+###END###
+def mtnisfile(self, name, rev):
+        # a non-file could be a directory or a deleted or renamed file
+        self.mtnloadmanifest(rev)
+        return name in self.files
+###END###
+def mtnisdir(self, name, rev):
+        self.mtnloadmanifest(rev)
+        return name in self.dirs
+###END###
+def mtngetcerts(self, rev):
+        certs = {
+            b"author": b"<missing>",
+            b"date": b"<missing>",
+            b"changelog": b"<missing>",
+            b"branch": b"<missing>",
+        }
+        certlist = self.mtnrun(b"certs", rev)
+        # mtn < 0.45:
+        #   key "test@selenic.com"
+        # mtn >= 0.45:
+        #   key [ff58a7ffb771907c4ff68995eada1c4da068d328]
+        certlist = re.split(br'\n\n {6}key ["\[]', certlist)
+        for e in certlist:
+            m = self.cert_re.match(e)
+            if m:
+                name, value = m.groups()
+                value = value.replace(br'\"', b'"')
+                value = value.replace(br'\\', b'\\')
+                certs[name] = value
+        # Monotone may have subsecond dates: 2005-02-05T09:39:12.364306
+        # and all times are stored in UTC
+        certs[b"date"] = certs[b"date"].split(b'.')[0] + b" UTC"
+        return certs
+###END###
+def getheads(self):
+        if not self.revs:
+            return self.mtnrun(b"leaves").splitlines()
+        else:
+            return self.revs
+###END###
+def getchanges(self, rev, full):
+        if full:
+            raise error.Abort(
+                _(b"convert from monotone does not support --full")
+            )
+        revision = self.mtnrun(b"get_revision", rev).split(b"\n\n")
+        files = {}
+        ignoremove = {}
+        renameddirs = []
+        copies = {}
+        for e in revision:
+            m = self.add_file_re.match(e)
+            if m:
+                files[m.group(1)] = rev
+                ignoremove[m.group(1)] = rev
+            m = self.patch_re.match(e)
+            if m:
+                files[m.group(1)] = rev
+            # Delete/rename is handled later when the convert engine
+            # discovers an IOError exception from getfile,
+            # but only if we add the "from" file to the list of changes.
+            m = self.delete_re.match(e)
+            if m:
+                files[m.group(1)] = rev
+            m = self.rename_re.match(e)
+            if m:
+                toname = m.group(2)
+                fromname = m.group(1)
+                if self.mtnisfile(toname, rev):
+                    ignoremove[toname] = 1
+                    copies[toname] = fromname
+                    files[toname] = rev
+                    files[fromname] = rev
+                elif self.mtnisdir(toname, rev):
+                    renameddirs.append((fromname, toname))
+
+        # Directory renames can be handled only once we have recorded
+        # all new files
+        for fromdir, todir in renameddirs:
+            renamed = {}
+            for tofile in self.files:
+                if tofile in ignoremove:
+                    continue
+                if tofile.startswith(todir + b'/'):
+                    renamed[tofile] = fromdir + tofile[len(todir) :]
+                    # Avoid chained moves like:
+                    # d1(/a) => d3/d1(/a)
+                    # d2 => d3
+                    ignoremove[tofile] = 1
+            for tofile, fromfile in renamed.items():
+                self.ui.debug(
+                    b"copying file in renamed directory from '%s' to '%s'"
+                    % (fromfile, tofile),
+                    b'\n',
+                )
+                files[tofile] = rev
+                copies[tofile] = fromfile
+            for fromfile in renamed.values():
+                files[fromfile] = rev
+
+        return (files.items(), copies, set())
+###END###
+def getfile(self, name, rev):
+        if not self.mtnisfile(name, rev):
+            return None, None
+        try:
+            data = self.mtnrun(b"get_file_of", name, r=rev)
+        except Exception:
+            return None, None
+        self.mtnloadmanifest(rev)
+        node, attr = self.files.get(name, (None, b""))
+        return data, attr
+###END###
+def getcommit(self, rev):
+        extra = {}
+        certs = self.mtngetcerts(rev)
+        if certs.get(b'suspend') == certs[b"branch"]:
+            extra[b'close'] = b'1'
+        dateformat = b"%Y-%m-%dT%H:%M:%S"
+        return common.commit(
+            author=certs[b"author"],
+            date=dateutil.datestr(dateutil.strdate(certs[b"date"], dateformat)),
+            desc=certs[b"changelog"],
+            rev=rev,
+            parents=self.mtnrun(b"parents", rev).splitlines(),
+            branch=certs[b"branch"],
+            extra=extra,
+        )
+###END###
+def gettags(self):
+        tags = {}
+        for e in self.mtnrun(b"tags").split(b"\n\n"):
+            m = self.tag_re.match(e)
+            if m:
+                tags[m.group(1)] = m.group(2)
+        return tags
+###END###
+def getchangedfiles(self, rev, i):
+        # This function is only needed to support --filemap
+        # ... and we don't support that
+        raise NotImplementedError
+###END###
+def before(self):
+        # Check if we have a new enough version to use automate stdio
+        try:
+            versionstr = self.mtnrunsingle(b"interface_version")
+            version = float(versionstr)
+        except Exception:
+            raise error.Abort(
+                _(b"unable to determine mtn automate interface version")
+            )
+
+        if version >= 12.0:
+            self.automatestdio = True
+            self.ui.debug(
+                b"mtn automate version %f - using automate stdio\n" % version
+            )
+
+            # launch the long-running automate stdio process
+            self.mtnwritefp, self.mtnreadfp = self._run2(
+                b'automate', b'stdio', b'-d', self.path
+            )
+            # read the headers
+            read = self.mtnreadfp.readline()
+            if read != b'format-version: 2\n':
+                raise error.Abort(
+                    _(b'mtn automate stdio header unexpected: %s') % read
+                )
+            while read != b'\n':
+                read = self.mtnreadfp.readline()
+                if not read:
+                    raise error.Abort(
+                        _(
+                            b"failed to reach end of mtn automate "
+                            b"stdio headers"
+                        )
+                    )
+        else:
+            self.ui.debug(
+                b"mtn automate version %s - not using automate stdio "
+                b"(automate >= 12.0 - mtn >= 0.46 is needed)\n" % version
+            )
+###END###
+def after(self):
+        if self.automatestdio:
+            self.mtnwritefp.close()
+            self.mtnwritefp = None
+            self.mtnreadfp.close()
+            self.mtnreadfp = None
+###END###
+def __init__(self, p):
+        self.copyfrom_path = p.copyfrom_path
+        self.copyfrom_rev = p.copyfrom_rev
+        self.action = p.action
+###END###
+def __init__(self, stdout):
+        self._stdout = stdout
+###END###
+def __iter__(self):
+        while True:
+            try:
+                entry = pickle.load(self._stdout)
+            except EOFError:
+                raise error.Abort(
+                    _(
+                        b'Mercurial failed to run itself, check'
+                        b' hg executable is in PATH'
+                    )
+                )
+            try:
+                orig_paths, revnum, author, date, message = entry
+            except (TypeError, ValueError):
+                if entry is None:
+                    break
+                raise error.Abort(_(b"log stream exception '%s'") % entry)
+            yield entry
+###END###
+def close(self):
+        if self._stdout:
+            self._stdout.close()
+            self._stdout = None
+###END###
+def __init__(
+        self,
+        url,
+        paths,
+        start,
+        end,
+        limit=0,
+        discover_changed_paths=True,
+        strict_node_history=False,
+    ):
+        def receiver(orig_paths, revnum, author, date, message, pool):
+            paths = {}
+            if orig_paths is not None:
+                for k, v in pycompat.iteritems(orig_paths):
+                    paths[k] = changedpath(v)
+            self.append((paths, revnum, author, date, message))
+
+        # Use an ra of our own so that our parent can consume
+        # our results without confusing the server.
+        t = transport.SvnRaTransport(url=url)
+        svn.ra.get_log(
+            t.ra,
+            paths,
+            start,
+            end,
+            limit,
+            discover_changed_paths,
+            strict_node_history,
+            receiver,
+        )
+###END###
+def close(self):
+        pass
+###END###
+def __init__(self, ui, repotype, url, revs=None):
+        super(svn_source, self).__init__(ui, repotype, url, revs=revs)
+
+        init_fsencoding()
+        if not (
+            url.startswith(b'svn://')
+            or url.startswith(b'svn+ssh://')
+            or (
+                os.path.exists(url)
+                and os.path.exists(os.path.join(url, b'.svn'))
+            )
+            or issvnurl(ui, url)
+        ):
+            raise NoRepo(
+                _(b"%s does not look like a Subversion repository") % url
+            )
+        if svn is None:
+            raise MissingTool(_(b'could not load Subversion python bindings'))
+
+        try:
+            version = svn.core.SVN_VER_MAJOR, svn.core.SVN_VER_MINOR
+            if version < (1, 4):
+                raise MissingTool(
+                    _(
+                        b'Subversion python bindings %d.%d found, '
+                        b'1.4 or later required'
+                    )
+                    % version
+                )
+        except AttributeError:
+            raise MissingTool(
+                _(
+                    b'Subversion python bindings are too old, 1.4 '
+                    b'or later required'
+                )
+            )
+
+        self.lastrevs = {}
+
+        latest = None
+        try:
+            # Support file://path@rev syntax. Useful e.g. to convert
+            # deleted branches.
+            at = url.rfind(b'@')
+            if at >= 0:
+                latest = int(url[at + 1 :])
+                url = url[:at]
+        except ValueError:
+            pass
+        self.url = geturl(url)
+        self.encoding = b'UTF-8'  # Subversion is always nominal UTF-8
+        try:
+            with util.with_lc_ctype():
+                self.transport = transport.SvnRaTransport(url=self.url)
+                self.ra = self.transport.ra
+                self.ctx = self.transport.client
+                self.baseurl = svn.ra.get_repos_root(self.ra)
+                # Module is either empty or a repository path starting with
+                # a slash and not ending with a slash.
+                self.module = urlreq.unquote(self.url[len(self.baseurl) :])
+                self.prevmodule = None
+                self.rootmodule = self.module
+                self.commits = {}
+                self.paths = {}
+                self.uuid = svn.ra.get_uuid(self.ra)
+        except svn.core.SubversionException:
+            ui.traceback()
+            svnversion = b'%d.%d.%d' % (
+                svn.core.SVN_VER_MAJOR,
+                svn.core.SVN_VER_MINOR,
+                svn.core.SVN_VER_MICRO,
+            )
+            raise NoRepo(
+                _(
+                    b"%s does not look like a Subversion repository "
+                    b"to libsvn version %s"
+                )
+                % (self.url, svnversion)
+            )
+
+        if revs:
+            if len(revs) > 1:
+                raise error.Abort(
+                    _(
+                        b'subversion source does not support '
+                        b'specifying multiple revisions'
+                    )
+                )
+            try:
+                latest = int(revs[0])
+            except ValueError:
+                raise error.Abort(
+                    _(b'svn: revision %s is not an integer') % revs[0]
+                )
+
+        trunkcfg = self.ui.config(b'convert', b'svn.trunk')
+        if trunkcfg is None:
+            trunkcfg = b'trunk'
+        self.trunkname = trunkcfg.strip(b'/')
+        self.startrev = self.ui.config(b'convert', b'svn.startrev')
+        try:
+            self.startrev = int(self.startrev)
+            if self.startrev < 0:
+                self.startrev = 0
+        except ValueError:
+            raise error.Abort(
+                _(b'svn: start revision %s is not an integer') % self.startrev
+            )
+
+        try:
+            with util.with_lc_ctype():
+                self.head = self.latest(self.module, latest)
+        except SvnPathNotFound:
+            self.head = None
+        if not self.head:
+            raise error.Abort(
+                _(b'no revision found in module %s') % self.module
+            )
+        self.last_changed = self.revnum(self.head)
+
+        self._changescache = (None, None)
+
+        if os.path.exists(os.path.join(url, b'.svn/entries')):
+            self.wc = url
+        else:
+            self.wc = None
+        self.convertfp = None
+###END###
+def before(self):
+        self.with_lc_ctype = util.with_lc_ctype()
+        self.with_lc_ctype.__enter__()
+###END###
+def after(self):
+        self.with_lc_ctype.__exit__(None, None, None)
+###END###
+def setrevmap(self, revmap):
+        lastrevs = {}
+        for revid in revmap:
+            uuid, module, revnum = revsplit(revid)
+            lastrevnum = lastrevs.setdefault(module, revnum)
+            if revnum > lastrevnum:
+                lastrevs[module] = revnum
+        self.lastrevs = lastrevs
+###END###
+def exists(self, path, optrev):
+        try:
+            svn.client.ls(
+                self.url.rstrip(b'/') + b'/' + quote(path),
+                optrev,
+                False,
+                self.ctx,
+            )
+            return True
+        except svn.core.SubversionException:
+            return False
+###END###
+def getheads(self):
+        def isdir(path, revnum):
+            kind = self._checkpath(path, revnum)
+            return kind == svn.core.svn_node_dir
+
+        def getcfgpath(name, rev):
+            cfgpath = self.ui.config(b'convert', b'svn.' + name)
+            if cfgpath is not None and cfgpath.strip() == b'':
+                return None
+            path = (cfgpath or name).strip(b'/')
+            if not self.exists(path, rev):
+                if self.module.endswith(path) and name == b'trunk':
+                    # we are converting from inside this directory
+                    return None
+                if cfgpath:
+                    raise error.Abort(
+                        _(b'expected %s to be at %r, but not found')
+                        % (name, path)
+                    )
+                return None
+            self.ui.note(
+                _(b'found %s at %r\n') % (name, pycompat.bytestr(path))
+            )
+            return path
+
+        rev = optrev(self.last_changed)
+        oldmodule = b''
+        trunk = getcfgpath(b'trunk', rev)
+        self.tags = getcfgpath(b'tags', rev)
+        branches = getcfgpath(b'branches', rev)
+
+        # If the project has a trunk or branches, we will extract heads
+        # from them. We keep the project root otherwise.
+        if trunk:
+            oldmodule = self.module or b''
+            self.module += b'/' + trunk
+            self.head = self.latest(self.module, self.last_changed)
+            if not self.head:
+                raise error.Abort(
+                    _(b'no revision found in module %s') % self.module
+                )
+
+        # First head in the list is the module's head
+        self.heads = [self.head]
+        if self.tags is not None:
+            self.tags = b'%s/%s' % (oldmodule, (self.tags or b'tags'))
+
+        # Check if branches bring a few more heads to the list
+        if branches:
+            rpath = self.url.strip(b'/')
+            branchnames = svn.client.ls(
+                rpath + b'/' + quote(branches), rev, False, self.ctx
+            )
+            for branch in sorted(branchnames):
+                module = b'%s/%s/%s' % (oldmodule, branches, branch)
+                if not isdir(module, self.last_changed):
+                    continue
+                brevid = self.latest(module, self.last_changed)
+                if not brevid:
+                    self.ui.note(_(b'ignoring empty branch %s\n') % branch)
+                    continue
+                self.ui.note(
+                    _(b'found branch %s at %d\n')
+                    % (branch, self.revnum(brevid))
+                )
+                self.heads.append(brevid)
+
+        if self.startrev and self.heads:
+            if len(self.heads) > 1:
+                raise error.Abort(
+                    _(
+                        b'svn: start revision is not supported '
+                        b'with more than one branch'
+                    )
+                )
+            revnum = self.revnum(self.heads[0])
+            if revnum < self.startrev:
+                raise error.Abort(
+                    _(b'svn: no revision found after start revision %d')
+                    % self.startrev
+                )
+
+        return self.heads
+###END###
+def _getchanges(self, rev, full):
+        (paths, parents) = self.paths[rev]
+        copies = {}
+        if parents:
+            files, self.removed, copies = self.expandpaths(rev, paths, parents)
+        if full or not parents:
+            # Perform a full checkout on roots
+            uuid, module, revnum = revsplit(rev)
+            entries = svn.client.ls(
+                self.baseurl + quote(module), optrev(revnum), True, self.ctx
+            )
+            files = [
+                n
+                for n, e in pycompat.iteritems(entries)
+                if e.kind == svn.core.svn_node_file
+            ]
+            self.removed = set()
+
+        files.sort()
+        files = pycompat.ziplist(files, [rev] * len(files))
+        return (files, copies)
+###END###
+def getchanges(self, rev, full):
+        # reuse cache from getchangedfiles
+        if self._changescache[0] == rev and not full:
+            (files, copies) = self._changescache[1]
+        else:
+            (files, copies) = self._getchanges(rev, full)
+            # caller caches the result, so free it here to release memory
+            del self.paths[rev]
+        return (files, copies, set())
+###END###
+def getchangedfiles(self, rev, i):
+        # called from filemap - cache computed values for reuse in getchanges
+        (files, copies) = self._getchanges(rev, False)
+        self._changescache = (rev, (files, copies))
+        return [f[0] for f in files]
+###END###
+def getcommit(self, rev):
+        if rev not in self.commits:
+            uuid, module, revnum = revsplit(rev)
+            self.module = module
+            self.reparent(module)
+            # We assume that:
+            # - requests for revisions after "stop" come from the
+            # revision graph backward traversal. Cache all of them
+            # down to stop, they will be used eventually.
+            # - requests for revisions before "stop" come to get
+            # isolated branches parents. Just fetch what is needed.
+            stop = self.lastrevs.get(module, 0)
+            if revnum < stop:
+                stop = revnum + 1
+            self._fetch_revisions(revnum, stop)
+            if rev not in self.commits:
+                raise error.Abort(_(b'svn: revision %s not found') % revnum)
+        revcommit = self.commits[rev]
+        # caller caches the result, so free it here to release memory
+        del self.commits[rev]
+        return revcommit
+###END###
+def checkrevformat(self, revstr, mapname=b'splicemap'):
+        """fails if revision format does not match the correct format"""
+        if not re.match(
+            br'svn:[0-9a-f]{8,8}-[0-9a-f]{4,4}-'
+            br'[0-9a-f]{4,4}-[0-9a-f]{4,4}-[0-9a-f]'
+            br'{12,12}(.*)@[0-9]+$',
+            revstr,
+        ):
+            raise error.Abort(
+                _(b'%s entry %s is not a valid revision identifier')
+                % (mapname, revstr)
+            )
+###END###
+def numcommits(self):
+        return int(self.head.rsplit(b'@', 1)[1]) - self.startrev
+###END###
+def gettags(self):
+        tags = {}
+        if self.tags is None:
+            return tags
+
+        # svn tags are just a convention, project branches left in a
+        # 'tags' directory. There is no other relationship than
+        # ancestry, which is expensive to discover and makes them hard
+        # to update incrementally.  Worse, past revisions may be
+        # referenced by tags far away in the future, requiring a deep
+        # history traversal on every calculation.  Current code
+        # performs a single backward traversal, tracking moves within
+        # the tags directory (tag renaming) and recording a new tag
+        # everytime a project is copied from outside the tags
+        # directory. It also lists deleted tags, this behaviour may
+        # change in the future.
+        pendings = []
+        tagspath = self.tags
+        start = svn.ra.get_latest_revnum(self.ra)
+        stream = self._getlog([self.tags], start, self.startrev)
+        try:
+            for entry in stream:
+                origpaths, revnum, author, date, message = entry
+                if not origpaths:
+                    origpaths = []
+                copies = [
+                    (e.copyfrom_path, e.copyfrom_rev, p)
+                    for p, e in pycompat.iteritems(origpaths)
+                    if e.copyfrom_path
+                ]
+                # Apply moves/copies from more specific to general
+                copies.sort(reverse=True)
+
+                srctagspath = tagspath
+                if copies and copies[-1][2] == tagspath:
+                    # Track tags directory moves
+                    srctagspath = copies.pop()[0]
+
+                for source, sourcerev, dest in copies:
+                    if not dest.startswith(tagspath + b'/'):
+                        continue
+                    for tag in pendings:
+                        if tag[0].startswith(dest):
+                            tagpath = source + tag[0][len(dest) :]
+                            tag[:2] = [tagpath, sourcerev]
+                            break
+                    else:
+                        pendings.append([source, sourcerev, dest])
+
+                # Filter out tags with children coming from different
+                # parts of the repository like:
+                # /tags/tag.1 (from /trunk:10)
+                # /tags/tag.1/foo (from /branches/foo:12)
+                # Here/tags/tag.1 discarded as well as its children.
+                # It happens with tools like cvs2svn. Such tags cannot
+                # be represented in mercurial.
+                addeds = {
+                    p: e.copyfrom_path
+                    for p, e in pycompat.iteritems(origpaths)
+                    if e.action == b'A' and e.copyfrom_path
+                }
+                badroots = set()
+                for destroot in addeds:
+                    for source, sourcerev, dest in pendings:
+                        if not dest.startswith(
+                            destroot + b'/'
+                        ) or source.startswith(addeds[destroot] + b'/'):
+                            continue
+                        badroots.add(destroot)
+                        break
+
+                for badroot in badroots:
+                    pendings = [
+                        p
+                        for p in pendings
+                        if p[2] != badroot
+                        and not p[2].startswith(badroot + b'/')
+                    ]
+
+                # Tell tag renamings from tag creations
+                renamings = []
+                for source, sourcerev, dest in pendings:
+                    tagname = dest.split(b'/')[-1]
+                    if source.startswith(srctagspath):
+                        renamings.append([source, sourcerev, tagname])
+                        continue
+                    if tagname in tags:
+                        # Keep the latest tag value
+                        continue
+                    # From revision may be fake, get one with changes
+                    try:
+                        tagid = self.latest(source, sourcerev)
+                        if tagid and tagname not in tags:
+                            tags[tagname] = tagid
+                    except SvnPathNotFound:
+                        # It happens when we are following directories
+                        # we assumed were copied with their parents
+                        # but were really created in the tag
+                        # directory.
+                        pass
+                pendings = renamings
+                tagspath = srctagspath
+        finally:
+            stream.close()
+        return tags
+###END###
+def converted(self, rev, destrev):
+        if not self.wc:
+            return
+        if self.convertfp is None:
+            self.convertfp = open(
+                os.path.join(self.wc, b'.svn', b'hg-shamap'), b'ab'
+            )
+        self.convertfp.write(
+            util.tonativeeol(b'%s %d\n' % (destrev, self.revnum(rev)))
+        )
+        self.convertfp.flush()
+###END###
+def revid(self, revnum, module=None):
+        return b'svn:%s%s@%d' % (self.uuid, module or self.module, revnum)
+###END###
+def revnum(self, rev):
+        return int(rev.split(b'@')[-1])
+###END###
+def latest(self, path, stop=None):
+        """Find the latest revid affecting path, up to stop revision
+        number. If stop is None, default to repository latest
+        revision. It may return a revision in a different module,
+        since a branch may be moved without a change being
+        reported. Return None if computed module does not belong to
+        rootmodule subtree.
+        """
+
+        def findchanges(path, start, stop=None):
+            stream = self._getlog([path], start, stop or 1)
+            try:
+                for entry in stream:
+                    paths, revnum, author, date, message = entry
+                    if stop is None and paths:
+                        # We do not know the latest changed revision,
+                        # keep the first one with changed paths.
+                        break
+                    if stop is not None and revnum <= stop:
+                        break
+
+                    for p in paths:
+                        if not path.startswith(p) or not paths[p].copyfrom_path:
+                            continue
+                        newpath = paths[p].copyfrom_path + path[len(p) :]
+                        self.ui.debug(
+                            b"branch renamed from %s to %s at %d\n"
+                            % (path, newpath, revnum)
+                        )
+                        path = newpath
+                        break
+                if not paths:
+                    revnum = None
+                return revnum, path
+            finally:
+                stream.close()
+
+        if not path.startswith(self.rootmodule):
+            # Requests on foreign branches may be forbidden at server level
+            self.ui.debug(b'ignoring foreign branch %r\n' % path)
+            return None
+
+        if stop is None:
+            stop = svn.ra.get_latest_revnum(self.ra)
+        try:
+            prevmodule = self.reparent(b'')
+            dirent = svn.ra.stat(self.ra, path.strip(b'/'), stop)
+            self.reparent(prevmodule)
+        except svn.core.SubversionException:
+            dirent = None
+        if not dirent:
+            raise SvnPathNotFound(
+                _(b'%s not found up to revision %d') % (path, stop)
+            )
+
+        # stat() gives us the previous revision on this line of
+        # development, but it might be in *another module*. Fetch the
+        # log and detect renames down to the latest revision.
+        revnum, realpath = findchanges(path, stop, dirent.created_rev)
+        if revnum is None:
+            # Tools like svnsync can create empty revision, when
+            # synchronizing only a subtree for instance. These empty
+            # revisions created_rev still have their original values
+            # despite all changes having disappeared and can be
+            # returned by ra.stat(), at least when stating the root
+            # module. In that case, do not trust created_rev and scan
+            # the whole history.
+            revnum, realpath = findchanges(path, stop)
+            if revnum is None:
+                self.ui.debug(b'ignoring empty branch %r\n' % realpath)
+                return None
+
+        if not realpath.startswith(self.rootmodule):
+            self.ui.debug(b'ignoring foreign branch %r\n' % realpath)
+            return None
+        return self.revid(revnum, realpath)
+###END###
+def reparent(self, module):
+        """Reparent the svn transport and return the previous parent."""
+        if self.prevmodule == module:
+            return module
+        svnurl = self.baseurl + quote(module)
+        prevmodule = self.prevmodule
+        if prevmodule is None:
+            prevmodule = b''
+        self.ui.debug(b"reparent to %s\n" % svnurl)
+        svn.ra.reparent(self.ra, svnurl)
+        self.prevmodule = module
+        return prevmodule
+###END###
+def expandpaths(self, rev, paths, parents):
+        changed, removed = set(), set()
+        copies = {}
+
+        new_module, revnum = revsplit(rev)[1:]
+        if new_module != self.module:
+            self.module = new_module
+            self.reparent(self.module)
+
+        progress = self.ui.makeprogress(
+            _(b'scanning paths'), unit=_(b'paths'), total=len(paths)
+        )
+        for i, (path, ent) in enumerate(paths):
+            progress.update(i, item=path)
+            entrypath = self.getrelpath(path)
+
+            kind = self._checkpath(entrypath, revnum)
+            if kind == svn.core.svn_node_file:
+                changed.add(self.recode(entrypath))
+                if not ent.copyfrom_path or not parents:
+                    continue
+                # Copy sources not in parent revisions cannot be
+                # represented, ignore their origin for now
+                pmodule, prevnum = revsplit(parents[0])[1:]
+                if ent.copyfrom_rev < prevnum:
+                    continue
+                copyfrom_path = self.getrelpath(ent.copyfrom_path, pmodule)
+                if not copyfrom_path:
+                    continue
+                self.ui.debug(
+                    b"copied to %s from %s@%d\n"
+                    % (entrypath, copyfrom_path, ent.copyfrom_rev)
+                )
+                copies[self.recode(entrypath)] = self.recode(copyfrom_path)
+            elif kind == 0:  # gone, but had better be a deleted *file*
+                self.ui.debug(b"gone from %d\n" % ent.copyfrom_rev)
+                pmodule, prevnum = revsplit(parents[0])[1:]
+                parentpath = pmodule + b"/" + entrypath
+                fromkind = self._checkpath(entrypath, prevnum, pmodule)
+
+                if fromkind == svn.core.svn_node_file:
+                    removed.add(self.recode(entrypath))
+                elif fromkind == svn.core.svn_node_dir:
+                    oroot = parentpath.strip(b'/')
+                    nroot = path.strip(b'/')
+                    children = self._iterfiles(oroot, prevnum)
+                    for childpath in children:
+                        childpath = childpath.replace(oroot, nroot)
+                        childpath = self.getrelpath(b"/" + childpath, pmodule)
+                        if childpath:
+                            removed.add(self.recode(childpath))
+                else:
+                    self.ui.debug(
+                        b'unknown path in revision %d: %s\n' % (revnum, path)
+                    )
+            elif kind == svn.core.svn_node_dir:
+                if ent.action == b'M':
+                    # If the directory just had a prop change,
+                    # then we shouldn't need to look for its children.
+                    continue
+                if ent.action == b'R' and parents:
+                    # If a directory is replacing a file, mark the previous
+                    # file as deleted
+                    pmodule, prevnum = revsplit(parents[0])[1:]
+                    pkind = self._checkpath(entrypath, prevnum, pmodule)
+                    if pkind == svn.core.svn_node_file:
+                        removed.add(self.recode(entrypath))
+                    elif pkind == svn.core.svn_node_dir:
+                        # We do not know what files were kept or removed,
+                        # mark them all as changed.
+                        for childpath in self._iterfiles(pmodule, prevnum):
+                            childpath = self.getrelpath(b"/" + childpath)
+                            if childpath:
+                                changed.add(self.recode(childpath))
+
+                for childpath in self._iterfiles(path, revnum):
+                    childpath = self.getrelpath(b"/" + childpath)
+                    if childpath:
+                        changed.add(self.recode(childpath))
+
+                # Handle directory copies
+                if not ent.copyfrom_path or not parents:
+                    continue
+                # Copy sources not in parent revisions cannot be
+                # represented, ignore their origin for now
+                pmodule, prevnum = revsplit(parents[0])[1:]
+                if ent.copyfrom_rev < prevnum:
+                    continue
+                copyfrompath = self.getrelpath(ent.copyfrom_path, pmodule)
+                if not copyfrompath:
+                    continue
+                self.ui.debug(
+                    b"mark %s came from %s:%d\n"
+                    % (path, copyfrompath, ent.copyfrom_rev)
+                )
+                children = self._iterfiles(ent.copyfrom_path, ent.copyfrom_rev)
+                for childpath in children:
+                    childpath = self.getrelpath(b"/" + childpath, pmodule)
+                    if not childpath:
+                        continue
+                    copytopath = path + childpath[len(copyfrompath) :]
+                    copytopath = self.getrelpath(copytopath)
+                    copies[self.recode(copytopath)] = self.recode(childpath)
+
+        progress.complete()
+        changed.update(removed)
+        return (list(changed), removed, copies)
+###END###
+def _fetch_revisions(self, from_revnum, to_revnum):
+        if from_revnum < to_revnum:
+            from_revnum, to_revnum = to_revnum, from_revnum
+
+        self.child_cset = None
+
+        def parselogentry(orig_paths, revnum, author, date, message):
+            """Return the parsed commit object or None, and True if
+            the revision is a branch root.
+            """
+            self.ui.debug(
+                b"parsing revision %d (%d changes)\n"
+                % (revnum, len(orig_paths))
+            )
+
+            branched = False
+            rev = self.revid(revnum)
+            # branch log might return entries for a parent we already have
+
+            if rev in self.commits or revnum < to_revnum:
+                return None, branched
+
+            parents = []
+            # check whether this revision is the start of a branch or part
+            # of a branch renaming
+            orig_paths = sorted(pycompat.iteritems(orig_paths))
+            root_paths = [
+                (p, e) for p, e in orig_paths if self.module.startswith(p)
+            ]
+            if root_paths:
+                path, ent = root_paths[-1]
+                if ent.copyfrom_path:
+                    branched = True
+                    newpath = ent.copyfrom_path + self.module[len(path) :]
+                    # ent.copyfrom_rev may not be the actual last revision
+                    previd = self.latest(newpath, ent.copyfrom_rev)
+                    if previd is not None:
+                        prevmodule, prevnum = revsplit(previd)[1:]
+                        if prevnum >= self.startrev:
+                            parents = [previd]
+                            self.ui.note(
+                                _(b'found parent of branch %s at %d: %s\n')
+                                % (self.module, prevnum, prevmodule)
+                            )
+                else:
+                    self.ui.debug(b"no copyfrom path, don't know what to do.\n")
+
+            paths = []
+            # filter out unrelated paths
+            for path, ent in orig_paths:
+                if self.getrelpath(path) is None:
+                    continue
+                paths.append((path, ent))
+
+            date = parsesvndate(date)
+            if self.ui.configbool(b'convert', b'localtimezone'):
+                date = makedatetimestamp(date[0])
+
+            if message:
+                log = self.recode(message)
+            else:
+                log = b''
+
+            if author:
+                author = self.recode(author)
+            else:
+                author = b''
+
+            try:
+                branch = self.module.split(b"/")[-1]
+                if branch == self.trunkname:
+                    branch = None
+            except IndexError:
+                branch = None
+
+            cset = commit(
+                author=author,
+                date=dateutil.datestr(date, b'%Y-%m-%d %H:%M:%S %1%2'),
+                desc=log,
+                parents=parents,
+                branch=branch,
+                rev=rev,
+            )
+
+            self.commits[rev] = cset
+            # The parents list is *shared* among self.paths and the
+            # commit object. Both will be updated below.
+            self.paths[rev] = (paths, cset.parents)
+            if self.child_cset and not self.child_cset.parents:
+                self.child_cset.parents[:] = [rev]
+            self.child_cset = cset
+            return cset, branched
+
+        self.ui.note(
+            _(b'fetching revision log for "%s" from %d to %d\n')
+            % (self.module, from_revnum, to_revnum)
+        )
+
+        try:
+            firstcset = None
+            lastonbranch = False
+            stream = self._getlog([self.module], from_revnum, to_revnum)
+            try:
+                for entry in stream:
+                    paths, revnum, author, date, message = entry
+                    if revnum < self.startrev:
+                        lastonbranch = True
+                        break
+                    if not paths:
+                        self.ui.debug(b'revision %d has no entries\n' % revnum)
+                        # If we ever leave the loop on an empty
+                        # revision, do not try to get a parent branch
+                        lastonbranch = lastonbranch or revnum == 0
+                        continue
+                    cset, lastonbranch = parselogentry(
+                        paths, revnum, author, date, message
+                    )
+                    if cset:
+                        firstcset = cset
+                    if lastonbranch:
+                        break
+            finally:
+                stream.close()
+
+            if not lastonbranch and firstcset and not firstcset.parents:
+                # The first revision of the sequence (the last fetched one)
+                # has invalid parents if not a branch root. Find the parent
+                # revision now, if any.
+                try:
+                    firstrevnum = self.revnum(firstcset.rev)
+                    if firstrevnum > 1:
+                        latest = self.latest(self.module, firstrevnum - 1)
+                        if latest:
+                            firstcset.parents.append(latest)
+                except SvnPathNotFound:
+                    pass
+        except svn.core.SubversionException as xxx_todo_changeme:
+            (inst, num) = xxx_todo_changeme.args
+            if num == svn.core.SVN_ERR_FS_NO_SUCH_REVISION:
+                raise error.Abort(
+                    _(b'svn: branch has no revision %s') % to_revnum
+                )
+            raise
+###END###
+def getfile(self, file, rev):
+        # TODO: ra.get_file transmits the whole file instead of diffs.
+        if file in self.removed:
+            return None, None
+        try:
+            new_module, revnum = revsplit(rev)[1:]
+            if self.module != new_module:
+                self.module = new_module
+                self.reparent(self.module)
+            io = stringio()
+            info = svn.ra.get_file(self.ra, file, revnum, io)
+            data = io.getvalue()
+            # ra.get_file() seems to keep a reference on the input buffer
+            # preventing collection. Release it explicitly.
+            io.close()
+            if isinstance(info, list):
+                info = info[-1]
+            mode = (b"svn:executable" in info) and b'x' or b''
+            mode = (b"svn:special" in info) and b'l' or mode
+        except svn.core.SubversionException as e:
+            notfound = (
+                svn.core.SVN_ERR_FS_NOT_FOUND,
+                svn.core.SVN_ERR_RA_DAV_PATH_NOT_FOUND,
+            )
+            if e.apr_err in notfound:  # File not found
+                return None, None
+            raise
+        if mode == b'l':
+            link_prefix = b"link "
+            if data.startswith(link_prefix):
+                data = data[len(link_prefix) :]
+        return data, mode
+###END###
+def _iterfiles(self, path, revnum):
+        """Enumerate all files in path at revnum, recursively."""
+        path = path.strip(b'/')
+        pool = svn.core.Pool()
+        rpath = b'/'.join([self.baseurl, quote(path)]).strip(b'/')
+        entries = svn.client.ls(rpath, optrev(revnum), True, self.ctx, pool)
+        if path:
+            path += b'/'
+        return (
+            (path + p)
+            for p, e in pycompat.iteritems(entries)
+            if e.kind == svn.core.svn_node_file
+        )
+###END###
+def getrelpath(self, path, module=None):
+        if module is None:
+            module = self.module
+        # Given the repository url of this wc, say
+        #   "http://server/plone/CMFPlone/branches/Plone-2_0-branch"
+        # extract the "entry" portion (a relative path) from what
+        # svn log --xml says, i.e.
+        #   "/CMFPlone/branches/Plone-2_0-branch/tests/PloneTestCase.py"
+        # that is to say "tests/PloneTestCase.py"
+        if path.startswith(module):
+            relative = path.rstrip(b'/')[len(module) :]
+            if relative.startswith(b'/'):
+                return relative[1:]
+            elif relative == b'':
+                return relative
+
+        # The path is outside our tracked tree...
+        self.ui.debug(
+            b'%r is not under %r, ignoring\n'
+            % (pycompat.bytestr(path), pycompat.bytestr(module))
+        )
+        return None
+###END###
+def _checkpath(self, path, revnum, module=None):
+        if module is not None:
+            prevmodule = self.reparent(b'')
+            path = module + b'/' + path
+        try:
+            # ra.check_path does not like leading slashes very much, it leads
+            # to PROPFIND subversion errors
+            return svn.ra.check_path(self.ra, path.strip(b'/'), revnum)
+        finally:
+            if module is not None:
+                self.reparent(prevmodule)
+###END###
+def _getlog(
+        self,
+        paths,
+        start,
+        end,
+        limit=0,
+        discover_changed_paths=True,
+        strict_node_history=False,
+    ):
+        # Normalize path names, svn >= 1.5 only wants paths relative to
+        # supplied URL
+        relpaths = []
+        for p in paths:
+            if not p.startswith(b'/'):
+                p = self.module + b'/' + p
+            relpaths.append(p.strip(b'/'))
+        args = [
+            self.baseurl,
+            relpaths,
+            start,
+            end,
+            limit,
+            discover_changed_paths,
+            strict_node_history,
+        ]
+        # developer config: convert.svn.debugsvnlog
+        if not self.ui.configbool(b'convert', b'svn.debugsvnlog'):
+            return directlogstream(*args)
+        arg = encodeargs(args)
+        hgexe = procutil.hgexecutable()
+        cmd = b'%s debugsvnlog' % procutil.shellquote(hgexe)
+        stdin, stdout = procutil.popen2(cmd)
+        stdin.write(arg)
+        try:
+            stdin.close()
+        except IOError:
+            raise error.Abort(
+                _(
+                    b'Mercurial failed to run itself, check'
+                    b' hg executable is in PATH'
+                )
+            )
+        return logstream(stdout)
+###END###
+def prerun(self):
+        if self.wc:
+            os.chdir(self.wc)
+###END###
+def postrun(self):
+        if self.wc:
+            os.chdir(self.cwd)
+###END###
+def join(self, name):
+        return os.path.join(self.wc, b'.svn', name)
+###END###
+def revmapfile(self):
+        return self.join(b'hg-shamap')
+###END###
+def authorfile(self):
+        return self.join(b'hg-authormap')
+###END###
+def __init__(self, ui, repotype, path):
+
+        converter_sink.__init__(self, ui, repotype, path)
+        commandline.__init__(self, ui, b'svn')
+        self.delete = []
+        self.setexec = []
+        self.delexec = []
+        self.copies = []
+        self.wc = None
+        self.cwd = encoding.getcwd()
+
+        created = False
+        if os.path.isfile(os.path.join(path, b'.svn', b'entries')):
+            self.wc = os.path.realpath(path)
+            self.run0(b'update')
+        else:
+            if not re.search(br'^(file|http|https|svn|svn\+ssh)://', path):
+                path = os.path.realpath(path)
+                if os.path.isdir(os.path.dirname(path)):
+                    if not os.path.exists(
+                        os.path.join(path, b'db', b'fs-type')
+                    ):
+                        ui.status(
+                            _(b"initializing svn repository '%s'\n")
+                            % os.path.basename(path)
+                        )
+                        commandline(ui, b'svnadmin').run0(b'create', path)
+                        created = path
+                    path = util.normpath(path)
+                    if not path.startswith(b'/'):
+                        path = b'/' + path
+                    path = b'file://' + path
+
+            wcpath = os.path.join(
+                encoding.getcwd(), os.path.basename(path) + b'-wc'
+            )
+            ui.status(
+                _(b"initializing svn working copy '%s'\n")
+                % os.path.basename(wcpath)
+            )
+            self.run0(b'checkout', path, wcpath)
+
+            self.wc = wcpath
+        self.opener = vfsmod.vfs(self.wc)
+        self.wopener = vfsmod.vfs(self.wc)
+        self.childmap = mapfile(ui, self.join(b'hg-childmap'))
+        if util.checkexec(self.wc):
+            self.is_exec = util.isexec
+        else:
+            self.is_exec = None
+
+        if created:
+            prop_actions_allowed = [
+                (b'M', b'svn:log'),
+                (b'A', b'hg:convert-branch'),
+                (b'A', b'hg:convert-rev'),
+            ]
+
+            if self.ui.configbool(
+                b'convert', b'svn.dangerous-set-commit-dates'
+            ):
+                prop_actions_allowed.append((b'M', b'svn:date'))
+
+            hook = os.path.join(created, b'hooks', b'pre-revprop-change')
+            fp = open(hook, b'wb')
+            fp.write(gen_pre_revprop_change_hook(prop_actions_allowed))
+            fp.close()
+            util.setflags(hook, False, True)
+
+        output = self.run0(b'info')
+        self.uuid = self.uuid_re.search(output).group(1).strip()
+###END###
+def wjoin(self, *names):
+        return os.path.join(self.wc, *names)
+###END###
+def manifest(self):
+        # As of svn 1.7, the "add" command fails when receiving
+        # already tracked entries, so we have to track and filter them
+        # ourselves.
+        m = set()
+        output = self.run0(b'ls', recursive=True, xml=True)
+        doc = xml.dom.minidom.parseString(output)
+        for e in doc.getElementsByTagName('entry'):
+            for n in e.childNodes:
+                if n.nodeType != n.ELEMENT_NODE or n.tagName != 'name':
+                    continue
+                name = ''.join(
+                    c.data for c in n.childNodes if c.nodeType == c.TEXT_NODE
+                )
+                # Entries are compared with names coming from
+                # mercurial, so bytes with undefined encoding. Our
+                # best bet is to assume they are in local
+                # encoding. They will be passed to command line calls
+                # later anyway, so they better be.
+                m.add(encoding.unitolocal(name))
+                break
+        return m
+###END###
+def putfile(self, filename, flags, data):
+        if b'l' in flags:
+            self.wopener.symlink(data, filename)
+        else:
+            try:
+                if os.path.islink(self.wjoin(filename)):
+                    os.unlink(filename)
+            except OSError:
+                pass
+
+            if self.is_exec:
+                # We need to check executability of the file before the change,
+                # because `vfs.write` is able to reset exec bit.
+                wasexec = False
+                if os.path.exists(self.wjoin(filename)):
+                    wasexec = self.is_exec(self.wjoin(filename))
+
+            self.wopener.write(filename, data)
+
+            if self.is_exec:
+                if wasexec:
+                    if b'x' not in flags:
+                        self.delexec.append(filename)
+                else:
+                    if b'x' in flags:
+                        self.setexec.append(filename)
+                util.setflags(self.wjoin(filename), False, b'x' in flags)
+###END###
+def _copyfile(self, source, dest):
+        # SVN's copy command pukes if the destination file exists, but
+        # our copyfile method expects to record a copy that has
+        # already occurred.  Cross the semantic gap.
+        wdest = self.wjoin(dest)
+        exists = os.path.lexists(wdest)
+        if exists:
+            fd, tempname = pycompat.mkstemp(
+                prefix=b'hg-copy-', dir=os.path.dirname(wdest)
+            )
+            os.close(fd)
+            os.unlink(tempname)
+            os.rename(wdest, tempname)
+        try:
+            self.run0(b'copy', source, dest)
+        finally:
+            self.manifest.add(dest)
+            if exists:
+                try:
+                    os.unlink(wdest)
+                except OSError:
+                    pass
+                os.rename(tempname, wdest)
+###END###
+def dirs_of(self, files):
+        dirs = set()
+        for f in files:
+            if os.path.isdir(self.wjoin(f)):
+                dirs.add(f)
+            i = len(f)
+            for i in iter(lambda: f.rfind(b'/', 0, i), -1):
+                dirs.add(f[:i])
+        return dirs
+###END###
+def add_dirs(self, files):
+        add_dirs = [
+            d for d in sorted(self.dirs_of(files)) if d not in self.manifest
+        ]
+        if add_dirs:
+            self.manifest.update(add_dirs)
+            self.xargs(add_dirs, b'add', non_recursive=True, quiet=True)
+        return add_dirs
+###END###
+def add_files(self, files):
+        files = [f for f in files if f not in self.manifest]
+        if files:
+            self.manifest.update(files)
+            self.xargs(files, b'add', quiet=True)
+        return files
+###END###
+def addchild(self, parent, child):
+        self.childmap[parent] = child
+###END###
+def revid(self, rev):
+        return b"svn:%s@%s" % (self.uuid, rev)
+###END###
+def putcommit(
+        self, files, copies, parents, commit, source, revmap, full, cleanp2
+    ):
+        for parent in parents:
+            try:
+                return self.revid(self.childmap[parent])
+            except KeyError:
+                pass
+
+        # Apply changes to working copy
+        for f, v in files:
+            data, mode = source.getfile(f, v)
+            if data is None:
+                self.delete.append(f)
+            else:
+                self.putfile(f, mode, data)
+                if f in copies:
+                    self.copies.append([copies[f], f])
+        if full:
+            self.delete.extend(sorted(self.manifest.difference(files)))
+        files = [f[0] for f in files]
+
+        entries = set(self.delete)
+        files = frozenset(files)
+        entries.update(self.add_dirs(files.difference(entries)))
+        if self.copies:
+            for s, d in self.copies:
+                self._copyfile(s, d)
+            self.copies = []
+        if self.delete:
+            self.xargs(self.delete, b'delete')
+            for f in self.delete:
+                self.manifest.remove(f)
+            self.delete = []
+        entries.update(self.add_files(files.difference(entries)))
+        if self.delexec:
+            self.xargs(self.delexec, b'propdel', b'svn:executable')
+            self.delexec = []
+        if self.setexec:
+            self.xargs(self.setexec, b'propset', b'svn:executable', b'*')
+            self.setexec = []
+
+        fd, messagefile = pycompat.mkstemp(prefix=b'hg-convert-')
+        fp = os.fdopen(fd, 'wb')
+        fp.write(util.tonativeeol(commit.desc))
+        fp.close()
+        try:
+            output = self.run0(
+                b'commit',
+                username=stringutil.shortuser(commit.author),
+                file=messagefile,
+                encoding=b'utf-8',
+            )
+            try:
+                rev = self.commit_re.search(output).group(1)
+            except AttributeError:
+                if not files:
+                    return parents[0] if parents else b'None'
+                self.ui.warn(_(b'unexpected svn output:\n'))
+                self.ui.warn(output)
+                raise error.Abort(_(b'unable to cope with svn output'))
+            if commit.rev:
+                self.run(
+                    b'propset',
+                    b'hg:convert-rev',
+                    commit.rev,
+                    revprop=True,
+                    revision=rev,
+                )
+            if commit.branch and commit.branch != b'default':
+                self.run(
+                    b'propset',
+                    b'hg:convert-branch',
+                    commit.branch,
+                    revprop=True,
+                    revision=rev,
+                )
+
+            if self.ui.configbool(
+                b'convert', b'svn.dangerous-set-commit-dates'
+            ):
+                # Subverson always uses UTC to represent date and time
+                date = dateutil.parsedate(commit.date)
+                date = (date[0], 0)
+
+                # The only way to set date and time for svn commit is to use propset after commit is done
+                self.run(
+                    b'propset',
+                    b'svn:date',
+                    formatsvndate(date),
+                    revprop=True,
+                    revision=rev,
+                )
+
+            for parent in parents:
+                self.addchild(parent, rev)
+            return self.revid(rev)
+        finally:
+            os.unlink(messagefile)
+###END###
+def puttags(self, tags):
+        self.ui.warn(_(b'writing Subversion tags is not yet implemented\n'))
+        return None, None
+###END###
+def hascommitfrommap(self, rev):
+        # We trust that revisions referenced in a map still is present
+        # TODO: implement something better if necessary and feasible
+        return True
+###END###
+def hascommitforsplicemap(self, rev):
+        # This is not correct as one can convert to an existing subversion
+        # repository and childmap would not list all revisions. Too bad.
+        if rev in self.childmap:
+            return True
+        raise error.Abort(
+            _(
+                b'splice map revision %s not found in subversion '
+                b'child map (revision lookups are not implemented)'
+            )
+            % rev
+        )
 ###END###
 def __init__(self, ui, source, filecount):
         self.ui = ui
@@ -9755,6 +9635,837 @@ def getbookmarks(self):
 def converted(self, rev, sinkrev):
         self.base.converted(rev, sinkrev)
 ###END###
+def __init__(self, l):
+        self._l = l
+###END###
+def __iter__(self):
+        return (_encodeornone(v) for v in self._l)
+###END###
+def get_token(self):
+        return _encodeornone(self._l.get_token())
+###END###
+def infile(self):
+        return self._l.infile or b'<unknown>'
+###END###
+def lineno(self):
+        return self._l.lineno
+###END###
+def __init__(
+        self,
+        author,
+        date,
+        desc,
+        parents,
+        branch=None,
+        rev=None,
+        extra=None,
+        sortkey=None,
+        saverev=True,
+        phase=phases.draft,
+        optparents=None,
+        ctx=None,
+    ):
+        self.author = author or b'unknown'
+        self.date = date or b'0 0'
+        self.desc = desc
+        self.parents = parents  # will be converted and used as parents
+        self.optparents = optparents or []  # will be used if already converted
+        self.branch = branch
+        self.rev = rev
+        self.extra = extra or {}
+        self.sortkey = sortkey
+        self.saverev = saverev
+        self.phase = phase
+        self.ctx = ctx
+###END###
+def __init__(self, ui, repotype, path=None, revs=None):
+        """Initialize conversion source (or raise NoRepo("message")
+        exception if path is not a valid repository)"""
+        self.ui = ui
+        self.path = path
+        self.revs = revs
+        self.repotype = repotype
+
+        self.encoding = b'utf-8'
+###END###
+def checkhexformat(self, revstr, mapname=b'splicemap'):
+        """fails if revstr is not a 40 byte hex. mercurial and git both uses
+        such format for their revision numbering
+        """
+        if not re.match(br'[0-9a-fA-F]{40,40}$', revstr):
+            raise error.Abort(
+                _(b'%s entry %s is not a valid revision identifier')
+                % (mapname, revstr)
+            )
+###END###
+def before(self):
+        pass
+###END###
+def after(self):
+        pass
+###END###
+def targetfilebelongstosource(self, targetfilename):
+        """Returns true if the given targetfile belongs to the source repo. This
+        is useful when only a subdirectory of the target belongs to the source
+        repo."""
+        # For normal full repo converts, this is always True.
+        return True
+###END###
+def setrevmap(self, revmap):
+        """set the map of already-converted revisions"""
+###END###
+def getheads(self):
+        """Return a list of this repository's heads"""
+        raise NotImplementedError
+###END###
+def getfile(self, name, rev):
+        """Return a pair (data, mode) where data is the file content
+        as a string and mode one of '', 'x' or 'l'. rev is the
+        identifier returned by a previous call to getchanges().
+        Data is None if file is missing/deleted in rev.
+        """
+        raise NotImplementedError
+###END###
+def getchanges(self, version, full):
+        """Returns a tuple of (files, copies, cleanp2).
+
+        files is a sorted list of (filename, id) tuples for all files
+        changed between version and its first parent returned by
+        getcommit(). If full, all files in that revision is returned.
+        id is the source revision id of the file.
+
+        copies is a dictionary of dest: source
+
+        cleanp2 is the set of files filenames that are clean against p2.
+        (Files that are clean against p1 are already not in files (unless
+        full). This makes it possible to handle p2 clean files similarly.)
+        """
+        raise NotImplementedError
+###END###
+def getcommit(self, version):
+        """Return the commit object for version"""
+        raise NotImplementedError
+###END###
+def numcommits(self):
+        """Return the number of commits in this source.
+
+        If unknown, return None.
+        """
+        return None
+###END###
+def gettags(self):
+        """Return the tags as a dictionary of name: revision
+
+        Tag names must be UTF-8 strings.
+        """
+        raise NotImplementedError
+###END###
+def recode(self, s, encoding=None):
+        if not encoding:
+            encoding = self.encoding or b'utf-8'
+
+        if isinstance(s, pycompat.unicode):
+            return s.encode("utf-8")
+        try:
+            return s.decode(pycompat.sysstr(encoding)).encode("utf-8")
+        except UnicodeError:
+            try:
+                return s.decode("latin-1").encode("utf-8")
+            except UnicodeError:
+                return s.decode(pycompat.sysstr(encoding), "replace").encode(
+                    "utf-8"
+                )
+###END###
+def getchangedfiles(self, rev, i):
+        """Return the files changed by rev compared to parent[i].
+
+        i is an index selecting one of the parents of rev.  The return
+        value should be the list of files that are different in rev and
+        this parent.
+
+        If rev has no parents, i is None.
+
+        This function is only needed to support --filemap
+        """
+        raise NotImplementedError
+###END###
+def converted(self, rev, sinkrev):
+        '''Notify the source that a revision has been converted.'''
+###END###
+def hasnativeorder(self):
+        """Return true if this source has a meaningful, native revision
+        order. For instance, Mercurial revisions are store sequentially
+        while there is no such global ordering with Darcs.
+        """
+        return False
+###END###
+def hasnativeclose(self):
+        """Return true if this source has ability to close branch."""
+        return False
+###END###
+def lookuprev(self, rev):
+        """If rev is a meaningful revision reference in source, return
+        the referenced identifier in the same format used by getcommit().
+        return None otherwise.
+        """
+        return None
+###END###
+def getbookmarks(self):
+        """Return the bookmarks as a dictionary of name: revision
+
+        Bookmark names are to be UTF-8 strings.
+        """
+        return {}
+###END###
+def checkrevformat(self, revstr, mapname=b'splicemap'):
+        """revstr is a string that describes a revision in the given
+        source control system.  Return true if revstr has correct
+        format.
+        """
+        return True
+###END###
+def __init__(self, ui, repotype, path):
+        """Initialize conversion sink (or raise NoRepo("message")
+        exception if path is not a valid repository)
+
+        created is a list of paths to remove if a fatal error occurs
+        later"""
+        self.ui = ui
+        self.path = path
+        self.created = []
+        self.repotype = repotype
+###END###
+def revmapfile(self):
+        """Path to a file that will contain lines
+        source_rev_id sink_rev_id
+        mapping equivalent revision identifiers for each system."""
+        raise NotImplementedError
+###END###
+def authorfile(self):
+        """Path to a file that will contain lines
+        srcauthor=dstauthor
+        mapping equivalent authors identifiers for each system."""
+        return None
+###END###
+def putcommit(
+        self, files, copies, parents, commit, source, revmap, full, cleanp2
+    ):
+        """Create a revision with all changed files listed in 'files'
+        and having listed parents. 'commit' is a commit object
+        containing at a minimum the author, date, and message for this
+        changeset.  'files' is a list of (path, version) tuples,
+        'copies' is a dictionary mapping destinations to sources,
+        'source' is the source repository, and 'revmap' is a mapfile
+        of source revisions to converted revisions. Only getfile() and
+        lookuprev() should be called on 'source'. 'full' means that 'files'
+        is complete and all other files should be removed.
+        'cleanp2' is a set of the filenames that are unchanged from p2
+        (only in the common merge case where there two parents).
+
+        Note that the sink repository is not told to update itself to
+        a particular revision (or even what that revision would be)
+        before it receives the file data.
+        """
+        raise NotImplementedError
+###END###
+def puttags(self, tags):
+        """Put tags into sink.
+
+        tags: {tagname: sink_rev_id, ...} where tagname is an UTF-8 string.
+        Return a pair (tag_revision, tag_parent_revision), or (None, None)
+        if nothing was changed.
+        """
+        raise NotImplementedError
+###END###
+def setbranch(self, branch, pbranches):
+        """Set the current branch name. Called before the first putcommit
+        on the branch.
+        branch: branch name for subsequent commits
+        pbranches: (converted parent revision, parent branch) tuples"""
+###END###
+def setfilemapmode(self, active):
+        """Tell the destination that we're using a filemap
+
+        Some converter_sources (svn in particular) can claim that a file
+        was changed in a revision, even if there was no change.  This method
+        tells the destination that we're using a filemap and that it should
+        filter empty revisions.
+        """
+###END###
+def before(self):
+        pass
+###END###
+def after(self):
+        pass
+###END###
+def putbookmarks(self, bookmarks):
+        """Put bookmarks into sink.
+
+        bookmarks: {bookmarkname: sink_rev_id, ...}
+        where bookmarkname is an UTF-8 string.
+        """
+###END###
+def hascommitfrommap(self, rev):
+        """Return False if a rev mentioned in a filemap is known to not be
+        present."""
+        raise NotImplementedError
+###END###
+def hascommitforsplicemap(self, rev):
+        """This method is for the special needs for splicemap handling and not
+        for general use. Returns True if the sink contains rev, aborts on some
+        special cases."""
+        raise NotImplementedError
+###END###
+def __init__(self, ui, command):
+        self.ui = ui
+        self.command = command
+###END###
+def prerun(self):
+        pass
+###END###
+def postrun(self):
+        pass
+###END###
+def _cmdline(self, cmd, *args, **kwargs):
+        kwargs = pycompat.byteskwargs(kwargs)
+        cmdline = [self.command, cmd] + list(args)
+        for k, v in pycompat.iteritems(kwargs):
+            if len(k) == 1:
+                cmdline.append(b'-' + k)
+            else:
+                cmdline.append(b'--' + k.replace(b'_', b'-'))
+            try:
+                if len(k) == 1:
+                    cmdline.append(b'' + v)
+                else:
+                    cmdline[-1] += b'=' + v
+            except TypeError:
+                pass
+        cmdline = [procutil.shellquote(arg) for arg in cmdline]
+        if not self.ui.debugflag:
+            cmdline += [b'2>', pycompat.bytestr(os.devnull)]
+        cmdline = b' '.join(cmdline)
+        return cmdline
+###END###
+def _run(self, cmd, *args, **kwargs):
+        def popen(cmdline):
+            p = subprocess.Popen(
+                procutil.tonativestr(cmdline),
+                shell=True,
+                bufsize=-1,
+                close_fds=procutil.closefds,
+                stdout=subprocess.PIPE,
+            )
+            return p
+
+        return self._dorun(popen, cmd, *args, **kwargs)
+###END###
+def _run2(self, cmd, *args, **kwargs):
+        return self._dorun(procutil.popen2, cmd, *args, **kwargs)
+###END###
+def _run3(self, cmd, *args, **kwargs):
+        return self._dorun(procutil.popen3, cmd, *args, **kwargs)
+###END###
+def _dorun(self, openfunc, cmd, *args, **kwargs):
+        cmdline = self._cmdline(cmd, *args, **kwargs)
+        self.ui.debug(b'running: %s\n' % (cmdline,))
+        self.prerun()
+        try:
+            return openfunc(cmdline)
+        finally:
+            self.postrun()
+###END###
+def run(self, cmd, *args, **kwargs):
+        p = self._run(cmd, *args, **kwargs)
+        output = p.communicate()[0]
+        self.ui.debug(output)
+        return output, p.returncode
+###END###
+def runlines(self, cmd, *args, **kwargs):
+        p = self._run(cmd, *args, **kwargs)
+        output = p.stdout.readlines()
+        p.wait()
+        self.ui.debug(b''.join(output))
+        return output, p.returncode
+###END###
+def checkexit(self, status, output=b''):
+        if status:
+            if output:
+                self.ui.warn(_(b'%s error:\n') % self.command)
+                self.ui.warn(output)
+            msg = procutil.explainexit(status)
+            raise error.Abort(b'%s %s' % (self.command, msg))
+###END###
+def run0(self, cmd, *args, **kwargs):
+        output, status = self.run(cmd, *args, **kwargs)
+        self.checkexit(status, output)
+        return output
+###END###
+def runlines0(self, cmd, *args, **kwargs):
+        output, status = self.runlines(cmd, *args, **kwargs)
+        self.checkexit(status, b''.join(output))
+        return output
+###END###
+def argmax(self):
+        # POSIX requires at least 4096 bytes for ARG_MAX
+        argmax = 4096
+        try:
+            argmax = os.sysconf("SC_ARG_MAX")
+        except (AttributeError, ValueError):
+            pass
+
+        # Windows shells impose their own limits on command line length,
+        # down to 2047 bytes for cmd.exe under Windows NT/2k and 2500 bytes
+        # for older 4nt.exe. See http://support.microsoft.com/kb/830473 for
+        # details about cmd.exe limitations.
+
+        # Since ARG_MAX is for command line _and_ environment, lower our limit
+        # (and make happy Windows shells while doing this).
+        return argmax // 2 - 1
+###END###
+def _limit_arglist(self, arglist, cmd, *args, **kwargs):
+        cmdlen = len(self._cmdline(cmd, *args, **kwargs))
+        limit = self.argmax - cmdlen
+        numbytes = 0
+        fl = []
+        for fn in arglist:
+            b = len(fn) + 3
+            if numbytes + b < limit or len(fl) == 0:
+                fl.append(fn)
+                numbytes += b
+            else:
+                yield fl
+                fl = [fn]
+                numbytes = b
+        if fl:
+            yield fl
+###END###
+def xargs(self, arglist, cmd, *args, **kwargs):
+        for l in self._limit_arglist(arglist, cmd, *args, **kwargs):
+            self.run0(cmd, *(list(args) + l), **kwargs)
+###END###
+def __init__(self, ui, path):
+        super(mapfile, self).__init__()
+        self.ui = ui
+        self.path = path
+        self.fp = None
+        self.order = []
+        self._read()
+###END###
+def _read(self):
+        if not self.path:
+            return
+        try:
+            fp = open(self.path, b'rb')
+        except IOError as err:
+            if err.errno != errno.ENOENT:
+                raise
+            return
+        for i, line in enumerate(util.iterfile(fp)):
+            line = line.splitlines()[0].rstrip()
+            if not line:
+                # Ignore blank lines
+                continue
+            try:
+                key, value = line.rsplit(b' ', 1)
+            except ValueError:
+                raise error.Abort(
+                    _(b'syntax error in %s(%d): key/value pair expected')
+                    % (self.path, i + 1)
+                )
+            if key not in self:
+                self.order.append(key)
+            super(mapfile, self).__setitem__(key, value)
+        fp.close()
+###END###
+def __setitem__(self, key, value):
+        if self.fp is None:
+            try:
+                self.fp = open(self.path, b'ab')
+            except IOError as err:
+                raise error.Abort(
+                    _(b'could not open map file %r: %s')
+                    % (self.path, encoding.strtolocal(err.strerror))
+                )
+        self.fp.write(util.tonativeeol(b'%s %s\n' % (key, value)))
+        self.fp.flush()
+        super(mapfile, self).__setitem__(key, value)
+###END###
+def close(self):
+        if self.fp:
+            self.fp.close()
+            self.fp = None
+###END###
+def __init__(self, url=b"", ra=None):
+        self.pool = Pool()
+        self.svn_url = url
+        self.username = b''
+        self.password = b''
+
+        # Only Subversion 1.4 has reparent()
+        if ra is None or not util.safehasattr(svn.ra, b'reparent'):
+            self.client = svn.client.create_context(self.pool)
+            ab = _create_auth_baton(self.pool)
+            self.client.auth_baton = ab
+            global svn_config
+            if svn_config is None:
+                svn_config = svn.core.svn_config_get_config(None)
+            self.client.config = svn_config
+            try:
+                self.ra = svn.client.open_ra_session(
+                    self.svn_url, self.client, self.pool
+                )
+            except SubversionException as xxx_todo_changeme:
+                (inst, num) = xxx_todo_changeme.args
+                if num in (
+                    svn.core.SVN_ERR_RA_ILLEGAL_URL,
+                    svn.core.SVN_ERR_RA_LOCAL_REPOS_OPEN_FAILED,
+                    svn.core.SVN_ERR_BAD_URL,
+                ):
+                    raise NotBranchError(url)
+                raise
+        else:
+            self.ra = ra
+            svn.ra.reparent(self.ra, self.svn_url.encode('utf8'))
+###END###
+def do_update(self, revnum, path, *args, **kwargs):
+        return self.Reporter(
+            svn.ra.do_update(self.ra, revnum, path, *args, **kwargs)
+        )
+###END###
+def __init__(self, reporter_data):
+            self._reporter, self._baton = reporter_data
+###END###
+def set_path(self, path, revnum, start_empty, lock_token, pool=None):
+            svn.ra.reporter2_invoke_set_path(
+                self._reporter,
+                self._baton,
+                path,
+                revnum,
+                start_empty,
+                lock_token,
+                pool,
+            )
+###END###
+def delete_path(self, path, pool=None):
+            svn.ra.reporter2_invoke_delete_path(
+                self._reporter, self._baton, path, pool
+            )
+###END###
+def link_path(
+            self, path, url, revision, start_empty, lock_token, pool=None
+        ):
+            svn.ra.reporter2_invoke_link_path(
+                self._reporter,
+                self._baton,
+                path,
+                url,
+                revision,
+                start_empty,
+                lock_token,
+                pool,
+            )
+###END###
+def finish_report(self, pool=None):
+            svn.ra.reporter2_invoke_finish_report(
+                self._reporter, self._baton, pool
+            )
+###END###
+def abort_report(self, pool=None):
+            svn.ra.reporter2_invoke_abort_report(
+                self._reporter, self._baton, pool
+            )
+###END###
+def __init__(self, ui, repotype, path, revs=None):
+        super(convert_cvs, self).__init__(ui, repotype, path, revs=revs)
+
+        cvs = os.path.join(path, b"CVS")
+        if not os.path.exists(cvs):
+            raise NoRepo(_(b"%s does not look like a CVS checkout") % path)
+
+        checktool(b'cvs')
+
+        self.changeset = None
+        self.files = {}
+        self.tags = {}
+        self.lastbranch = {}
+        self.socket = None
+        self.cvsroot = open(os.path.join(cvs, b"Root"), b'rb').read()[:-1]
+        self.cvsrepo = open(os.path.join(cvs, b"Repository"), b'rb').read()[:-1]
+        self.encoding = encoding.encoding
+
+        self._connect()
+###END###
+def _parse(self):
+        if self.changeset is not None:
+            return
+        self.changeset = {}
+
+        maxrev = 0
+        if self.revs:
+            if len(self.revs) > 1:
+                raise error.Abort(
+                    _(
+                        b'cvs source does not support specifying '
+                        b'multiple revs'
+                    )
+                )
+            # TODO: handle tags
+            try:
+                # patchset number?
+                maxrev = int(self.revs[0])
+            except ValueError:
+                raise error.Abort(
+                    _(b'revision %s is not a patchset number') % self.revs[0]
+                )
+
+        d = encoding.getcwd()
+        try:
+            os.chdir(self.path)
+
+            cache = b'update'
+            if not self.ui.configbool(b'convert', b'cvsps.cache'):
+                cache = None
+            db = cvsps.createlog(self.ui, cache=cache)
+            db = cvsps.createchangeset(
+                self.ui,
+                db,
+                fuzz=int(self.ui.config(b'convert', b'cvsps.fuzz')),
+                mergeto=self.ui.config(b'convert', b'cvsps.mergeto'),
+                mergefrom=self.ui.config(b'convert', b'cvsps.mergefrom'),
+            )
+
+            for cs in db:
+                if maxrev and cs.id > maxrev:
+                    break
+                id = b"%d" % cs.id
+                cs.author = self.recode(cs.author)
+                self.lastbranch[cs.branch] = id
+                cs.comment = self.recode(cs.comment)
+                if self.ui.configbool(b'convert', b'localtimezone'):
+                    cs.date = makedatetimestamp(cs.date[0])
+                date = dateutil.datestr(cs.date, b'%Y-%m-%d %H:%M:%S %1%2')
+                self.tags.update(dict.fromkeys(cs.tags, id))
+
+                files = {}
+                for f in cs.entries:
+                    files[f.file] = b"%s%s" % (
+                        b'.'.join([(b"%d" % x) for x in f.revision]),
+                        [b'', b'(DEAD)'][f.dead],
+                    )
+
+                # add current commit to set
+                c = commit(
+                    author=cs.author,
+                    date=date,
+                    parents=[(b"%d" % p.id) for p in cs.parents],
+                    desc=cs.comment,
+                    branch=cs.branch or b'',
+                )
+                self.changeset[id] = c
+                self.files[id] = files
+
+            self.heads = self.lastbranch.values()
+        finally:
+            os.chdir(d)
+###END###
+def _connect(self):
+        root = self.cvsroot
+        conntype = None
+        user, host = None, None
+        cmd = [b'cvs', b'server']
+
+        self.ui.status(_(b"connecting to %s\n") % root)
+
+        if root.startswith(b":pserver:"):
+            root = root[9:]
+            m = re.match(r'(?:(.*?)(?::(.*?))?@)?([^:/]*)(?::(\d*))?(.*)', root)
+            if m:
+                conntype = b"pserver"
+                user, passw, serv, port, root = m.groups()
+                if not user:
+                    user = b"anonymous"
+                if not port:
+                    port = 2401
+                else:
+                    port = int(port)
+                format0 = b":pserver:%s@%s:%s" % (user, serv, root)
+                format1 = b":pserver:%s@%s:%d%s" % (user, serv, port, root)
+
+                if not passw:
+                    passw = b"A"
+                    cvspass = os.path.expanduser(b"~/.cvspass")
+                    try:
+                        pf = open(cvspass, b'rb')
+                        for line in pf.read().splitlines():
+                            part1, part2 = line.split(b' ', 1)
+                            # /1 :pserver:user@example.com:2401/cvsroot/foo
+                            # Ah<Z
+                            if part1 == b'/1':
+                                part1, part2 = part2.split(b' ', 1)
+                                format = format1
+                            # :pserver:user@example.com:/cvsroot/foo Ah<Z
+                            else:
+                                format = format0
+                            if part1 == format:
+                                passw = part2
+                                break
+                        pf.close()
+                    except IOError as inst:
+                        if inst.errno != errno.ENOENT:
+                            if not getattr(inst, 'filename', None):
+                                inst.filename = cvspass
+                            raise
+
+                sck = socket.socket()
+                sck.connect((serv, port))
+                sck.send(
+                    b"\n".join(
+                        [
+                            b"BEGIN AUTH REQUEST",
+                            root,
+                            user,
+                            passw,
+                            b"END AUTH REQUEST",
+                            b"",
+                        ]
+                    )
+                )
+                if sck.recv(128) != b"I LOVE YOU\n":
+                    raise error.Abort(_(b"CVS pserver authentication failed"))
+
+                self.writep = self.readp = sck.makefile(b'r+')
+
+        if not conntype and root.startswith(b":local:"):
+            conntype = b"local"
+            root = root[7:]
+
+        if not conntype:
+            # :ext:user@host/home/user/path/to/cvsroot
+            if root.startswith(b":ext:"):
+                root = root[5:]
+            m = re.match(br'(?:([^@:/]+)@)?([^:/]+):?(.*)', root)
+            # Do not take Windows path "c:\foo\bar" for a connection strings
+            if os.path.isdir(root) or not m:
+                conntype = b"local"
+            else:
+                conntype = b"rsh"
+                user, host, root = m.group(1), m.group(2), m.group(3)
+
+        if conntype != b"pserver":
+            if conntype == b"rsh":
+                rsh = encoding.environ.get(b"CVS_RSH") or b"ssh"
+                if user:
+                    cmd = [rsh, b'-l', user, host] + cmd
+                else:
+                    cmd = [rsh, host] + cmd
+
+            # popen2 does not support argument lists under Windows
+            cmd = b' '.join(procutil.shellquote(arg) for arg in cmd)
+            self.writep, self.readp = procutil.popen2(cmd)
+
+        self.realroot = root
+
+        self.writep.write(b"Root %s\n" % root)
+        self.writep.write(
+            b"Valid-responses ok error Valid-requests Mode"
+            b" M Mbinary E Checked-in Created Updated"
+            b" Merged Removed\n"
+        )
+        self.writep.write(b"valid-requests\n")
+        self.writep.flush()
+        r = self.readp.readline()
+        if not r.startswith(b"Valid-requests"):
+            raise error.Abort(
+                _(
+                    b'unexpected response from CVS server '
+                    b'(expected "Valid-requests", but got %r)'
+                )
+                % r
+            )
+        if b"UseUnchanged" in r:
+            self.writep.write(b"UseUnchanged\n")
+            self.writep.flush()
+            self.readp.readline()
+###END###
+def getheads(self):
+        self._parse()
+        return self.heads
+###END###
+def getfile(self, name, rev):
+        def chunkedread(fp, count):
+            # file-objects returned by socket.makefile() do not handle
+            # large read() requests very well.
+            chunksize = 65536
+            output = stringio()
+            while count > 0:
+                data = fp.read(min(count, chunksize))
+                if not data:
+                    raise error.Abort(
+                        _(b"%d bytes missing from remote file") % count
+                    )
+                count -= len(data)
+                output.write(data)
+            return output.getvalue()
+
+        self._parse()
+        if rev.endswith(b"(DEAD)"):
+            return None, None
+
+        args = (b"-N -P -kk -r %s --" % rev).split()
+        args.append(self.cvsrepo + b'/' + name)
+        for x in args:
+            self.writep.write(b"Argument %s\n" % x)
+        self.writep.write(b"Directory .\n%s\nco\n" % self.realroot)
+        self.writep.flush()
+
+        data = b""
+        mode = None
+        while True:
+            line = self.readp.readline()
+            if line.startswith(b"Created ") or line.startswith(b"Updated "):
+                self.readp.readline()  # path
+                self.readp.readline()  # entries
+                mode = self.readp.readline()[:-1]
+                count = int(self.readp.readline()[:-1])
+                data = chunkedread(self.readp, count)
+            elif line.startswith(b" "):
+                data += line[1:]
+            elif line.startswith(b"M "):
+                pass
+            elif line.startswith(b"Mbinary "):
+                count = int(self.readp.readline()[:-1])
+                data = chunkedread(self.readp, count)
+            else:
+                if line == b"ok\n":
+                    if mode is None:
+                        raise error.Abort(_(b'malformed response from CVS'))
+                    return (data, b"x" in mode and b"x" or b"")
+                elif line.startswith(b"E "):
+                    self.ui.warn(_(b"cvs server: %s\n") % line[2:])
+                elif line.startswith(b"Remove"):
+                    self.readp.readline()
+                else:
+                    raise error.Abort(_(b"unknown CVS response: %s") % line)
+###END###
+def getchanges(self, rev, full):
+        if full:
+            raise error.Abort(_(b"convert from cvs does not support --full"))
+        self._parse()
+        return sorted(pycompat.iteritems(self.files[rev])), {}, set()
+###END###
+def getcommit(self, rev):
+        self._parse()
+        return self.changeset[rev]
+###END###
+def gettags(self):
+        self._parse()
+        return self.tags
+###END###
+def getchangedfiles(self, rev, i):
+        self._parse()
+        return sorted(self.files[rev])
+###END###
 def __init__(self, path, node, url):
         self.path = path
         self.node = node
@@ -10245,346 +10956,6 @@ def getbookmarks(self):
 def checkrevformat(self, revstr, mapname=b'splicemap'):
         """git revision string is a 40 byte hex"""
         self.checkhexformat(revstr, mapname)
-###END###
-def __init__(self, ui, repotype, path, revs=None):
-        # avoid import cycle
-        from . import convcmd
-
-        super(p4_source, self).__init__(ui, repotype, path, revs=revs)
-
-        if b"/" in path and not path.startswith(b'//'):
-            raise common.NoRepo(
-                _(b'%s does not look like a P4 repository') % path
-            )
-
-        common.checktool(b'p4', abort=False)
-
-        self.revmap = {}
-        self.encoding = self.ui.config(
-            b'convert', b'p4.encoding', convcmd.orig_encoding
-        )
-        self.re_type = re.compile(
-            br"([a-z]+)?(text|binary|symlink|apple|resource|unicode|utf\d+)"
-            br"(\+\w+)?$"
-        )
-        self.re_keywords = re.compile(
-            br"\$(Id|Header|Date|DateTime|Change|File|Revision|Author)"
-            br":[^$\n]*\$"
-        )
-        self.re_keywords_old = re.compile(br"\$(Id|Header):[^$\n]*\$")
-
-        if revs and len(revs) > 1:
-            raise error.Abort(
-                _(
-                    b"p4 source does not support specifying "
-                    b"multiple revisions"
-                )
-            )
-###END###
-def setrevmap(self, revmap):
-        """Sets the parsed revmap dictionary.
-
-        Revmap stores mappings from a source revision to a target revision.
-        It is set in convertcmd.convert and provided by the user as a file
-        on the commandline.
-
-        Revisions in the map are considered beeing present in the
-        repository and ignored during _parse(). This allows for incremental
-        imports if a revmap is provided.
-        """
-        self.revmap = revmap
-###END###
-def _parse_view(self, path):
-        """Read changes affecting the path"""
-        cmd = b'p4 -G changes -s submitted %s' % procutil.shellquote(path)
-        stdout = procutil.popen(cmd, mode=b'rb')
-        p4changes = {}
-        for d in loaditer(stdout):
-            c = d.get(b"change", None)
-            if c:
-                p4changes[c] = True
-        return p4changes
-###END###
-def _parse(self, ui, path):
-        """Prepare list of P4 filenames and revisions to import"""
-        p4changes = {}
-        changeset = {}
-        files_map = {}
-        copies_map = {}
-        localname = {}
-        depotname = {}
-        heads = []
-
-        ui.status(_(b'reading p4 views\n'))
-
-        # read client spec or view
-        if b"/" in path:
-            p4changes.update(self._parse_view(path))
-            if path.startswith(b"//") and path.endswith(b"/..."):
-                views = {path[:-3]: b""}
-            else:
-                views = {b"//": b""}
-        else:
-            cmd = b'p4 -G client -o %s' % procutil.shellquote(path)
-            clientspec = marshal.load(procutil.popen(cmd, mode=b'rb'))
-
-            views = {}
-            for client in clientspec:
-                if client.startswith(b"View"):
-                    sview, cview = clientspec[client].split()
-                    p4changes.update(self._parse_view(sview))
-                    if sview.endswith(b"...") and cview.endswith(b"..."):
-                        sview = sview[:-3]
-                        cview = cview[:-3]
-                    cview = cview[2:]
-                    cview = cview[cview.find(b"/") + 1 :]
-                    views[sview] = cview
-
-        # list of changes that affect our source files
-        p4changes = sorted(p4changes.keys(), key=int)
-
-        # list with depot pathnames, longest first
-        vieworder = sorted(views.keys(), key=len, reverse=True)
-
-        # handle revision limiting
-        startrev = self.ui.config(b'convert', b'p4.startrev')
-
-        # now read the full changelists to get the list of file revisions
-        ui.status(_(b'collecting p4 changelists\n'))
-        lastid = None
-        for change in p4changes:
-            if startrev and int(change) < int(startrev):
-                continue
-            if self.revs and int(change) > int(self.revs[0]):
-                continue
-            if change in self.revmap:
-                # Ignore already present revisions, but set the parent pointer.
-                lastid = change
-                continue
-
-            if lastid:
-                parents = [lastid]
-            else:
-                parents = []
-
-            d = self._fetch_revision(change)
-            c = self._construct_commit(d, parents)
-
-            descarr = c.desc.splitlines(True)
-            if len(descarr) > 0:
-                shortdesc = descarr[0].rstrip(b'\r\n')
-            else:
-                shortdesc = b'**empty changelist description**'
-
-            t = b'%s %s' % (c.rev, shortdesc)
-            ui.status(stringutil.ellipsis(t, 80) + b'\n')
-
-            files = []
-            copies = {}
-            copiedfiles = []
-            i = 0
-            while (b"depotFile%d" % i) in d and (b"rev%d" % i) in d:
-                oldname = d[b"depotFile%d" % i]
-                filename = None
-                for v in vieworder:
-                    if oldname.lower().startswith(v.lower()):
-                        filename = decodefilename(views[v] + oldname[len(v) :])
-                        break
-                if filename:
-                    files.append((filename, d[b"rev%d" % i]))
-                    depotname[filename] = oldname
-                    if d.get(b"action%d" % i) == b"move/add":
-                        copiedfiles.append(filename)
-                    localname[oldname] = filename
-                i += 1
-
-            # Collect information about copied files
-            for filename in copiedfiles:
-                oldname = depotname[filename]
-
-                flcmd = b'p4 -G filelog %s' % procutil.shellquote(oldname)
-                flstdout = procutil.popen(flcmd, mode=b'rb')
-
-                copiedfilename = None
-                for d in loaditer(flstdout):
-                    copiedoldname = None
-
-                    i = 0
-                    while (b"change%d" % i) in d:
-                        if (
-                            d[b"change%d" % i] == change
-                            and d[b"action%d" % i] == b"move/add"
-                        ):
-                            j = 0
-                            while (b"file%d,%d" % (i, j)) in d:
-                                if d[b"how%d,%d" % (i, j)] == b"moved from":
-                                    copiedoldname = d[b"file%d,%d" % (i, j)]
-                                    break
-                                j += 1
-                        i += 1
-
-                    if copiedoldname and copiedoldname in localname:
-                        copiedfilename = localname[copiedoldname]
-                        break
-
-                if copiedfilename:
-                    copies[filename] = copiedfilename
-                else:
-                    ui.warn(
-                        _(b"cannot find source for copied file: %s@%s\n")
-                        % (filename, change)
-                    )
-
-            changeset[change] = c
-            files_map[change] = files
-            copies_map[change] = copies
-            lastid = change
-
-        if lastid and len(changeset) > 0:
-            heads = [lastid]
-
-        return {
-            b'changeset': changeset,
-            b'files': files_map,
-            b'copies': copies_map,
-            b'heads': heads,
-            b'depotname': depotname,
-        }
-###END###
-def _parse_once(self):
-        return self._parse(self.ui, self.path)
-###END###
-def copies(self):
-        return self._parse_once[b'copies']
-###END###
-def files(self):
-        return self._parse_once[b'files']
-###END###
-def changeset(self):
-        return self._parse_once[b'changeset']
-###END###
-def heads(self):
-        return self._parse_once[b'heads']
-###END###
-def depotname(self):
-        return self._parse_once[b'depotname']
-###END###
-def getheads(self):
-        return self.heads
-###END###
-def getfile(self, name, rev):
-        cmd = b'p4 -G print %s' % procutil.shellquote(
-            b"%s#%s" % (self.depotname[name], rev)
-        )
-
-        lasterror = None
-        while True:
-            stdout = procutil.popen(cmd, mode=b'rb')
-
-            mode = None
-            contents = []
-            keywords = None
-
-            for d in loaditer(stdout):
-                code = d[b"code"]
-                data = d.get(b"data")
-
-                if code == b"error":
-                    # if this is the first time error happened
-                    # re-attempt getting the file
-                    if not lasterror:
-                        lasterror = IOError(d[b"generic"], data)
-                        # this will exit inner-most for-loop
-                        break
-                    else:
-                        raise lasterror
-
-                elif code == b"stat":
-                    action = d.get(b"action")
-                    if action in [b"purge", b"delete", b"move/delete"]:
-                        return None, None
-                    p4type = self.re_type.match(d[b"type"])
-                    if p4type:
-                        mode = b""
-                        flags = (p4type.group(1) or b"") + (
-                            p4type.group(3) or b""
-                        )
-                        if b"x" in flags:
-                            mode = b"x"
-                        if p4type.group(2) == b"symlink":
-                            mode = b"l"
-                        if b"ko" in flags:
-                            keywords = self.re_keywords_old
-                        elif b"k" in flags:
-                            keywords = self.re_keywords
-
-                elif code == b"text" or code == b"binary":
-                    contents.append(data)
-
-                lasterror = None
-
-            if not lasterror:
-                break
-
-        if mode is None:
-            return None, None
-
-        contents = b''.join(contents)
-
-        if keywords:
-            contents = keywords.sub(b"$\\1$", contents)
-        if mode == b"l" and contents.endswith(b"\n"):
-            contents = contents[:-1]
-
-        return contents, mode
-###END###
-def getchanges(self, rev, full):
-        if full:
-            raise error.Abort(_(b"convert from p4 does not support --full"))
-        return self.files[rev], self.copies[rev], set()
-###END###
-def _construct_commit(self, obj, parents=None):
-        """
-        Constructs a common.commit object from an unmarshalled
-        `p4 describe` output
-        """
-        desc = self.recode(obj.get(b"desc", b""))
-        date = (int(obj[b"time"]), 0)  # timezone not set
-        if parents is None:
-            parents = []
-
-        return common.commit(
-            author=self.recode(obj[b"user"]),
-            date=dateutil.datestr(date, b'%Y-%m-%d %H:%M:%S %1%2'),
-            parents=parents,
-            desc=desc,
-            branch=None,
-            rev=obj[b'change'],
-            extra={b"p4": obj[b'change'], b"convert_revision": obj[b'change']},
-        )
-###END###
-def _fetch_revision(self, rev):
-        """Return an output of `p4 describe` including author, commit date as
-        a dictionary."""
-        cmd = b"p4 -G describe -s %s" % rev
-        stdout = procutil.popen(cmd, mode=b'rb')
-        return marshal.load(stdout)
-###END###
-def getcommit(self, rev):
-        if rev in self.changeset:
-            return self.changeset[rev]
-        elif rev in self.revmap:
-            d = self._fetch_revision(rev)
-            return self._construct_commit(d, parents=None)
-        raise error.Abort(
-            _(b"cannot find %s in the revmap or parsed changesets") % rev
-        )
-###END###
-def gettags(self):
-        return {}
-###END###
-def getchangedfiles(self, rev, i):
-        return sorted([x[0] for x in self.files[rev]])
 ###END###
 def __init__(self, ui, repotype, path, revs=None):
         super(gnuarch_source, self).__init__(ui, repotype, path, revs=revs)
@@ -11652,6 +12023,110 @@ def receiveline(self):
                     if len(self.missingids) > 0:
                         return self.missingids.pop(0)
                     return None
+###END###
+def generate(self, commonrevs, clnodes, fastpathlinkrev, source, **kwargs):
+        if shallowutil.isenabled(self._repo):
+            fastpathlinkrev = False
+
+        return super(shallowcg1packer, self).generate(
+            commonrevs, clnodes, fastpathlinkrev, source, **kwargs
+        )
+###END###
+def group(self, nodelist, rlog, lookup, units=None, reorder=None):
+        return shallowgroup(
+            shallowcg1packer, self, nodelist, rlog, lookup, units=units
+        )
+###END###
+def generatefiles(self, changedfiles, *args, **kwargs):
+        try:
+            linknodes, commonrevs, source = args
+        except ValueError:
+            commonrevs, source, mfdicts, fastpathlinkrev, fnodes, clrevs = args
+        if shallowutil.isenabled(self._repo):
+            repo = self._repo
+            if isinstance(repo, bundlerepo.bundlerepository):
+                # If the bundle contains filelogs, we can't pull from it, since
+                # bundlerepo is heavily tied to revlogs. Instead require that
+                # the user use unbundle instead.
+                # Force load the filelog data.
+                bundlerepo.bundlerepository.file(repo, b'foo')
+                if repo._cgfilespos:
+                    raise error.Abort(
+                        b"cannot pull from full bundles",
+                        hint=b"use `hg unbundle` instead",
+                    )
+                return []
+            filestosend = self.shouldaddfilegroups(source)
+            if filestosend == NoFiles:
+                changedfiles = list(
+                    [f for f in changedfiles if not repo.shallowmatch(f)]
+                )
+
+        return super(shallowcg1packer, self).generatefiles(
+            changedfiles, *args, **kwargs
+        )
+###END###
+def shouldaddfilegroups(self, source):
+        repo = self._repo
+        if not shallowutil.isenabled(repo):
+            return AllFiles
+
+        if source == b"push" or source == b"bundle":
+            return AllFiles
+
+        # We won't actually strip the files, but we should put them in any
+        # backup bundle generated by strip (especially for cases like narrow's
+        # `hg tracked --removeinclude`, as failing to do so means that the
+        # "saved" changesets during a strip won't have their files reapplied and
+        # thus their linknode adjusted, if necessary).
+        if source == b"strip":
+            cfg = repo.ui.config(b'remotefilelog', b'strip.includefiles')
+            if cfg == b'local':
+                return LocalFiles
+            elif cfg != b'none':
+                return AllFiles
+
+        caps = self._bundlecaps or []
+        if source == b"serve" or source == b"pull":
+            if constants.BUNDLE2_CAPABLITY in caps:
+                return LocalFiles
+            else:
+                # Serving to a full repo requires us to serve everything
+                repo.ui.warn(_(b"pulling from a shallow repo\n"))
+                return AllFiles
+
+        return NoFiles
+###END###
+def prune(self, rlog, missing, commonrevs):
+        if not isinstance(rlog, remotefilelog.remotefilelog):
+            return super(shallowcg1packer, self).prune(
+                rlog, missing, commonrevs
+            )
+
+        repo = self._repo
+        results = []
+        for fnode in missing:
+            fctx = repo.filectx(rlog.filename, fileid=fnode)
+            if fctx.linkrev() not in commonrevs:
+                results.append(fnode)
+        return results
+###END###
+def nodechunk(self, revlog, node, prevnode, linknode):
+        prefix = b''
+        if prevnode == revlog.nullid:
+            delta = revlog.rawdata(node)
+            prefix = mdiff.trivialdiffheader(len(delta))
+        else:
+            # Actually uses remotefilelog.revdiff which works on nodes, not revs
+            delta = revlog.revdiff(prevnode, node)
+        p1, p2 = revlog.parents(node)
+        flags = revlog.flags(node)
+        meta = self.builddeltaheader(node, p1, p2, prevnode, linknode, flags)
+        meta += prefix
+        l = len(meta) + len(delta)
+        yield changegroup.chunkheader(l)
+        yield meta
+        yield delta
 ###END###
 def __init__(self, ui, path):
         super(datapackstore, self).__init__(ui, path)

@@ -1,2 +1,2 @@
-dataset_path = '...'
-repository_path = '...'
+dataset_path = '.../dataset'
+repository_path = '.../intellij-community'

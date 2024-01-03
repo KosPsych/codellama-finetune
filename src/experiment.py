@@ -57,10 +57,9 @@ if __name__ == "__main__":
     
     
     print('train dataset creation')
-    training_dataset = create_dataset(dataset_path + language +'_train.txt')
-
+    training_dataset = create_dataset(dataset_path + '/' + language +'_train.txt')
     print('eval dataset creation')
-    eval_dataset = create_dataset(dataset_path + language + '_test.txt')
+    eval_dataset = create_dataset(dataset_path + '/' + language + '_test.txt')
 
 
     # Model and tokenizer names

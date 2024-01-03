@@ -33,7 +33,12 @@ git clone https://github.com/KosPsych/codellama-finetune
 conda create --name <name> python==3.9
 ```
 
-5. Install dependencies:
+5. Activate virtual environment:
+```
+conda activate <name>
+```
+
+6. Install dependencies:
 ```
 pip install -r requirements.txt
 ```
