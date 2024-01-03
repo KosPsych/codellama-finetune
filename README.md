@@ -3,7 +3,7 @@ This repository houses code dedicated to fine-tuning the [Code Llama 2](https://
 This specialized task is referred to as [code infilling](https://huggingface.co/blog/codellama#code-infilling), wherein the model is conditioned to generate code that aligns  with an existing code's beginning and end sections. The model is fine-tuned with data scraped from the official Intellij community [repository](https://github.com/JetBrains/intellij-community).  
 
 ### Objective and Future Directions
-The main objective of this repository is to showcase the adaptation of downstream models and the outcomes to validate the feasibility of the task. Potential future improvements, such as saving models, expanding to support additional languages, and refining the code and methodology, could be considered.  
+The main objective of this repository is to showcase the adaptation of downstream models and the outcomes to validate the feasibility of the task. Potential future improvements, such as saving/reloading models, expanding to support additional languages, and refining the code and methodology to support a larger dataset, could be considered.  
  
 
 ### Module Development Specifications
