@@ -62,4 +62,5 @@ Using the dataset created by ```python3 src/dataset_creation.py n_files``` one c
 ```
 python3 src/experiments.py lang
 ```
-In the provided code snippet, lang represents the selected programming language, which can be either `java` or `python`. This code assesses the base model's performance on the dataset, showcasing accuracy and similarity (measured via the [Levenshtein distance](https://en.wikipedia.org/wiki/Levenshtein_distance)) for the task of predicting method names. Following this, the model undergoes fine-tuning using [peft](https://github.com/huggingface/peft). The refined model is then reassessed on the dataset to monitor metric enhancements. The outcomes are presented in the terminal.
+Where `lang` represents the selected programming language, which can be either `java` or `python`.  
+This code assesses the base model's performance on the dataset, showcasing accuracy and similarity (measured via the [Levenshtein distance](https://en.wikipedia.org/wiki/Levenshtein_distance)) for the task of predicting method names. Following this, the model undergoes fine-tuning using [peft](https://github.com/huggingface/peft). The refined model is then reassessed on the dataset to monitor metric enhancements. The outcomes are presented in the terminal.
