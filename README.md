@@ -53,7 +53,7 @@ To initiate this process, execute the following command:
 ```
 python3 src/dataset_creation.py n_files
 ```
-Here, n_files represents the number of files you wish to process from the specified repository. For instance, if n_files is set to 100, the module will scrape 100 Java files and 100 Python files.
+Here, `n_files` represents the number of files you wish to process from the specified repository. For instance, if `n_files` is set to 100, the module will scrape 100 Java files and 100 Python files.
 
 > Prior to running the process, ensure that any files within the dataset folder are removed.
 
