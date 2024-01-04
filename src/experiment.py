@@ -27,6 +27,7 @@ def eval_model(model, tokenizer, dataset,  eval_metrics):
     for i in range(len(dataset)):
                  method = dataset[i]['method']
                  method_name = dataset[i]['method_name'].replace('_<EOT>','').strip()
+                 method = method[:5000]
                  
                  input_ids = tokenizer(method, return_tensors="pt")["input_ids"].to("cuda")
 
